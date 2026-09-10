@@ -1,0 +1,6 @@
+# pymobiledevice3 provides the USB transport, the iOS 17+ userspace RSD tunnel,
+# and the LocationSimulation DTX channel. It is GPL-3.0-or-later, which is why
+# this project is too.
+pymobiledevice3>=11.0
+aiohttp>=3.9
+gpxpy>=1.6

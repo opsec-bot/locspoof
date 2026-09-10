@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.gpx
+!examples/*.gpx
+
+# local tooling, not part of the project
+.impeccable/
+.letta/

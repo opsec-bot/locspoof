@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>locspoof</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3;
+    --dim: #8b949e; --accent: #2f81f7; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    /* Three steps, each a ~1.28 jump. Anything between them is noise. */
+    --fs-sm: 11px;    /* legends, hints, metadata */
+    --fs-md: 14px;    /* controls and primary readouts */
+    --fs-lg: 18px;    /* the one title */
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: var(--fs-md)/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); overflow: hidden;
+  }
+  #map { position: absolute; inset: 0; background: #0d1117; }
+  .leaflet-container { background: #0d1117; }
+
+  /* Match Leaflet's own controls to the dark panel. */
+  .leaflet-control-layers, .leaflet-bar a, .leaflet-control-attribution {
+    background: rgba(22,27,34,.96) !important; color: var(--text) !important;
+    border-color: var(--line) !important;
+  }
+  .leaflet-bar a:hover { background: #21262d !important; }
+  .leaflet-control-layers-expanded { padding: 8px 10px; font-size: var(--fs-md); }
+  .leaflet-control-layers label { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .leaflet-control-attribution { font-size: var(--fs-sm); }
+  .leaflet-control-attribution a { color: var(--accent) !important; }
+
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 1000;
+    width: 340px; max-height: calc(100vh - 24px); overflow-y: auto;
+    background: rgba(22,27,34,.96); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 28px rgba(0,0,0,.5);
+  }
+  h1 { font-size: var(--fs-lg); margin: 0 0 10px; letter-spacing: -.2px; font-weight: 650; }
+  h1 span { color: var(--dim); font-weight: 400; font-size: var(--fs-sm); }
+
+  .status { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.ready { background: var(--ok); }
+  .dot.connecting { background: var(--warn); animation: pulse 1.2s infinite; }
+  .dot.error { background: var(--err); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .detail { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 12px; min-height: 16px; }
+
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 0 0 10px; }
+  legend { color: var(--dim); font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .6px; padding: 0 5px; }
+
+  .seg { display: flex; gap: 4px; margin-bottom: 8px; }
+  .seg button {
+    flex: 1; background: #21262d; color: var(--text); border: 1px solid var(--line);
+    padding: 7px 4px; border-radius: 6px; cursor: pointer; font-size: var(--fs-md);
+  }
+  .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  button.act {
+    width: 100%; padding: 8px; margin-top: 6px; border-radius: 6px; cursor: pointer;
+    background: #21262d; color: var(--text); border: 1px solid var(--line); font-size: var(--fs-md);
+  }
+  button.act:hover:not(:disabled) { border-color: var(--accent); }
+  button.act:disabled { opacity: .4; cursor: not-allowed; }
+  button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.act.danger { background: #3d1d1d; border-color: #6e2a2a; color: #ff9d96; }
+
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .row label { color: var(--dim); font-size: var(--fs-sm); flex: none; }
+  input[type=number], input[type=text], input[type=search] {
+    flex: 1; min-width: 0; background: #0d1117; border: 1px solid var(--line);
+    color: var(--text); padding: 6px 8px; border-radius: 6px; font-size: var(--fs-md);
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  .presets { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+  .presets button {
+    flex: 1 1 30%; background: #0d1117; border: 1px solid var(--line); color: var(--dim);
+    font-size: var(--fs-sm); padding: 5px 2px; border-radius: 5px; cursor: pointer;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--accent); }
+  .check { display: flex; gap: 12px; margin-bottom: 8px; color: var(--dim); font-size: var(--fs-sm); }
+  .check label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+  .bar { height: 4px; background: #0d1117; border-radius: 2px; overflow: hidden; margin: 8px 0 4px; }
+  /* scaleX composites on the GPU; animating width would relayout on every tick. */
+  .bar > div {
+    height: 100%; width: 100%; background: var(--accent);
+    transform: scaleX(0); transform-origin: left center;
+    transition: transform .3s linear;
+  }
+  .meta { color: var(--dim); font-size: var(--fs-sm); font-family: ui-monospace, Consolas, monospace; }
+  .hint { color: var(--dim); font-size: var(--fs-sm); margin-top: 6px; }
+  .err { color: var(--err); font-size: var(--fs-sm); margin-top: 6px; }
+
+  #results { list-style: none; margin: 4px 0 0; padding: 0; max-height: 180px; overflow-y: auto; }
+  #results li {
+    padding: 6px 8px; border-radius: 5px; cursor: pointer; font-size: var(--fs-sm);
+    color: var(--dim); border: 1px solid transparent;
+  }
+  #results li:hover { background: #21262d; color: var(--text); border-color: var(--line); }
+
+  #coords {
+    position: absolute; bottom: 12px; right: 12px; z-index: 1000;
+    background: rgba(22,27,34,.94); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 10px; font-family: ui-monospace, Consolas, monospace; font-size: var(--fs-sm);
+    color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="coords">move the mouse over the map</div>
+
+<div id="panel">
+  <h1>locspoof <span id="ver"></span></h1>
+
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <div id="statusText">starting…</div>
+  </div>
+  <div class="detail" id="detail"></div>
+
+  <fieldset>
+    <legend>Find a place</legend>
+    <div class="row" style="margin:0">
+      <input type="search" id="search" placeholder="address, city, landmark…">
+    </div>
+    <ul id="results"></ul>
+  </fieldset>
+
+  <fieldset>
+    <legend>Mode</legend>
+    <div class="seg">
+      <button id="modePin" class="on">Pin</button>
+      <button id="modeRoute">Route</button>
+    </div>
+    <div class="hint" id="modeHint">Click the map to place the phone there.</div>
+  </fieldset>
+
+  <fieldset id="routeBox" style="display:none">
+    <legend>Route</legend>
+
+    <div class="seg">
+      <button id="planAuto" class="on">Follow roads</button>
+      <button id="planManual">Straight lines</button>
+    </div>
+
+    <div id="autoBox">
+      <div class="seg">
+        <button class="prof on" data-profile="drive">Drive</button>
+        <button class="prof" data-profile="bike">Bike</button>
+        <button class="prof" data-profile="walk">Walk</button>
+      </div>
+      <button class="act" id="planBtn" disabled>Plan on roads</button>
+      <div class="hint" id="planHint">Click a start, then a destination.</div>
+      <div class="err" id="planErr"></div>
+    </div>
+
+    <div class="presets" style="margin-top:10px">
+      <button data-speed="3">walk 3</button>
+      <button data-speed="6">jog 6</button>
+      <button data-speed="12">bike 12</button>
+      <button data-speed="25">city 25</button>
+      <button data-speed="45">road 45</button>
+      <button data-speed="65">hwy 65</button>
+    </div>
+    <div class="row">
+      <label>mph</label>
+      <input type="number" id="speed" value="3" min="0.1" max="600" step="0.5">
+    </div>
+    <div class="check">
+      <label><input type="checkbox" id="loop"> loop</label>
+      <label><input type="checkbox" id="pingpong"> back and forth</label>
+    </div>
+    <div class="bar"><div id="prog"></div></div>
+    <div class="meta" id="routeMeta">no route yet</div>
+    <button class="act primary" id="startRoute" disabled>Start route</button>
+    <button class="act" id="stopRoute" style="display:none">Stop route</button>
+    <button class="act" id="undoPoint" disabled>Undo last point</button>
+    <button class="act" id="clearRoute" disabled>Clear route</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Coordinates</legend>
+    <div class="row">
+      <input type="text" id="manual" placeholder="33.381861, -96.259611">
+    </div>
+    <button class="act" id="goManual">Go to coordinates</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>GPX</legend>
+    <button class="act" id="importBtn">Import GPX…</button>
+    <input type="file" id="gpxFile" accept=".gpx,application/gpx+xml" style="display:none">
+    <button class="act" id="exportBtn" disabled>Export route as GPX</button>
+  </fieldset>
+
+  <button class="act danger" id="clearAll">Stop spoofing (restore real GPS)</button>
+</div>
+
+<script>
+// ---------------------------------------------------------------- basemaps
+// Every source here is keyless. CARTO is deliberately absent: it answers with
+// HTTP 200 and a real tile that has "API KEY REQUIRED" stamped across it, so it
+// fails visually while passing any status-code check.
+const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services/';
+const ESRI_ATTR = '&copy; Esri';
+const esri = (path, max) => L.tileLayer(ESRI + path + '/MapServer/tile/{z}/{y}/{x}',
+  { attribution: ESRI_ATTR, maxZoom: max, maxNativeZoom: max });
+
+const imagery = esri('World_Imagery', 19);
+const labels = esri('Reference/World_Boundaries_and_Places', 19);
+const roadsOverlay = esri('Reference/World_Transportation', 19);
+
+const basemaps = {
+  'Dark': esri('Canvas/World_Dark_Gray_Base', 16),
+  'Satellite': imagery,
+  'Satellite + labels': L.layerGroup([imagery, roadsOverlay, labels]),
+  'Streets': esri('World_Street_Map', 19),
+  'Topographic': esri('World_Topo_Map', 19),
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 })
+};
+
+const map = L.map('map', { zoomControl: true, maxZoom: 19 }).setView([32.7767, -96.797], 12);
+let savedBase = null;
+try { savedBase = localStorage.getItem('locspoof.basemap'); } catch (e) {}
+(basemaps[savedBase] || basemaps['Satellite + labels']).addTo(map);
+L.control.layers(basemaps, null, { position: 'topright' }).addTo(map);
+L.control.scale({ imperial: true, metric: false }).addTo(map);
+map.on('baselayerchange', (e) => {
+  try { localStorage.setItem('locspoof.basemap', e.name); } catch (err) {}
+});
+
+const phoneIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:16px;height:16px;border-radius:50%;background:#2f81f7;' +
+        'border:3px solid #fff;box-shadow:0 0 0 6px rgba(47,129,247,.28)"></div>',
+  iconSize: [16, 16], iconAnchor: [8, 8]
+});
+
+// ------------------------------------------------------------------- state
+let mode = 'pin';
+let planMode = 'auto';        // auto = snap to roads, manual = straight lines
+let profile = 'drive';
+let anchors = [];             // what the user clicked
+let path = [];                // what actually gets played (planned or manual)
+let pathLine = null, anchorMarkers = [], phoneMarker = null, activeLine = null;
+let routeRunning = false;
+
+const $ = (id) => document.getElementById(id);
+const M_PER_MI = 1609.344;
+
+function miles(m) {
+  return m < 160 ? Math.round(m * 3.28084) + ' ft' : (m / M_PER_MI).toFixed(2) + ' mi';
+}
+
+// -------------------------------------------------------------- networking
+async function post(path_, body) {
+  const res = await fetch(path_, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? '{}' : JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const reason = (await res.text().catch(() => '')) || res.statusText;
+    throw new Error(reason);
+  }
+  return res.json();
+}
+
+const STATUS_TEXT = {
+  starting: 'starting', no_usbmux: 'Apple driver missing', no_device: 'waiting for iPhone',
+  connecting: 'connecting', ready: 'ready', error: 'error', unsupported: 'unsupported iOS'
+};
+
+function applyStatus(s) {
+  const d = s.device, r = s.route;
+  $('dot').className = 'dot ' + (d.state === 'ready' ? 'ready'
+    : d.state === 'connecting' ? 'connecting'
+    : (d.state === 'error' || d.state === 'no_usbmux') ? 'error' : '');
+  $('statusText').textContent = STATUS_TEXT[d.state] || d.state;
+  $('ver').textContent = d.device_name ? (d.device_name + (d.ios_version ? ' · iOS ' + d.ios_version : '')) : '';
+  $('detail').textContent = d.detail || '';
+
+  if (d.desired) {
+    const ll = [d.desired[0], d.desired[1]];
+    if (!phoneMarker) phoneMarker = L.marker(ll, { icon: phoneIcon }).addTo(map);
+    else phoneMarker.setLatLng(ll);
+  } else if (phoneMarker) {
+    map.removeLayer(phoneMarker); phoneMarker = null;
+  }
+
+  routeRunning = r.running;
+  $('startRoute').style.display = r.running ? 'none' : '';
+  $('stopRoute').style.display = r.running ? '' : 'none';
+  const frac = r.length_m ? Math.min(1, r.distance_m / r.length_m) : 0;
+  $('prog').style.transform = 'scaleX(' + frac.toFixed(4) + ')';
+
+  if (r.running && r.points.length) {
+    if (!activeLine) activeLine = L.polyline(r.points, { color: '#2f81f7', weight: 5, opacity: .9 }).addTo(map);
+    else activeLine.setLatLngs(r.points);
+    const remain = (r.length_m - r.distance_m) / (r.speed_mph * 0.44704);
+    $('routeMeta').textContent =
+      `${miles(r.distance_m)} / ${miles(r.length_m)} · ${r.speed_mph} mph · ` +
+      `${remain < 90 ? Math.round(remain) + 's' : Math.round(remain / 60) + 'min'} left`;
+  } else {
+    if (activeLine) { map.removeLayer(activeLine); activeLine = null; }
+    updateMeta();
+  }
+}
+
+function connectEvents() {
+  const es = new EventSource('/api/events');
+  es.onmessage = (e) => applyStatus(JSON.parse(e.data));
+  es.onerror = () => {
+    $('dot').className = 'dot error';
+    $('statusText').textContent = 'server disconnected';
+    es.close();
+    setTimeout(connectEvents, 2000);
+  };
+}
+connectEvents();
+
+// ------------------------------------------------------------- route drawing
+function redraw() {
+  anchorMarkers.forEach(m => map.removeLayer(m));
+  anchorMarkers = [];
+  if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
+
+  if (path.length > 1) {
+    pathLine = L.polyline(path, {
+      color: planMode === 'auto' ? '#3fb950' : '#8b949e',
+      weight: 4, opacity: .9,
+      dashArray: planMode === 'auto' ? null : '6,6'
+    }).addTo(map);
+  }
+  anchors.forEach((p, i) => {
+    const first = i === 0, last = i === anchors.length - 1 && anchors.length > 1;
+    anchorMarkers.push(L.circleMarker(p, {
+      radius: 6, color: '#fff', weight: 2, fillOpacity: 1,
+      fillColor: first ? '#3fb950' : last ? '#f85149' : '#2f81f7'
+    }).bindTooltip(first ? 'start' : last ? 'end' : 'stop ' + i).addTo(map));
+  });
+
+  updateMeta();
+  $('planBtn').disabled = anchors.length < 2;
+  $('startRoute').disabled = path.length < 2;
+  $('exportBtn').disabled = path.length < 2;
+  $('undoPoint').disabled = !anchors.length;
+  $('clearRoute').disabled = !anchors.length && !path.length;
+}
+
+function metres(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
+  const s = Math.sin(dLat / 2) ** 2 +
+            Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(Math.min(1, s)));
+}
+
+function pathLength() {
+  let total = 0;
+  for (let i = 1; i < path.length; i++) total += metres(path[i - 1], path[i]);
+  return total;
+}
+
+function updateMeta() {
+  if (routeRunning) return;
+  if (path.length < 2) {
+    $('routeMeta').textContent = anchors.length
+      ? `${anchors.length} point${anchors.length > 1 ? 's' : ''} · not planned yet`
+      : 'no route yet';
+    return;
+  }
+  const total = pathLength();
+  const speed = parseFloat($('speed').value) || 3;
+  const secs = total / (speed * 0.44704);
+  const eta = secs < 90 ? Math.round(secs) + 's'
+    : secs < 5400 ? Math.round(secs / 60) + ' min'
+    : (secs / 3600).toFixed(1) + ' hr';
+  $('routeMeta').textContent = `${miles(total)} · ${path.length} pts · ${eta} at ${speed} mph`;
+}
+
+// ------------------------------------------------------------------ actions
+map.on('mousemove', (e) => {
+  $('coords').textContent = e.latlng.lat.toFixed(6) + ', ' + e.latlng.lng.toFixed(6);
+});
+
+map.on('click', async (e) => {
+  const lat = +e.latlng.lat.toFixed(6), lon = +e.latlng.lng.toFixed(6);
+  if (mode === 'pin') {
+    try { await post('/api/location', { lat, lon }); }
+    catch (err) { alert('Could not set location: ' + err.message); }
+    return;
+  }
+  anchors.push([lat, lon]);
+  if (planMode === 'manual') path = anchors.slice();
+  else $('planErr').textContent = '';
+  redraw();
+  // Two anchors in road mode is the common case, so plan without another click.
+  if (planMode === 'auto' && anchors.length === 2) planRoute();
+});
+
+async function planRoute() {
+  if (anchors.length < 2) return;
+  $('planBtn').disabled = true;
+  $('planHint').textContent = 'planning…';
+  $('planErr').textContent = '';
+  try {
+    const res = await post('/api/route/plan', { points: anchors, profile });
+    path = res.points;
+    $('planHint').textContent =
+      `${miles(res.distance_m)} of road, ${res.points.length} points`;
+    redraw();
+    map.fitBounds(L.polyline(path).getBounds(), { padding: [50, 50] });
+  } catch (err) {
+    $('planErr').textContent = String(err.message || err).slice(0, 300);
+    $('planHint').textContent = 'Could not reach a routing server. Try "Straight lines".';
+  } finally {
+    $('planBtn').disabled = anchors.length < 2;
+  }
+}
+
+function setMode(next) {
+  mode = next;
+  $('modePin').classList.toggle('on', next === 'pin');
+  $('modeRoute').classList.toggle('on', next === 'route');
+  $('routeBox').style.display = next === 'route' ? '' : 'none';
+  $('modeHint').textContent = next === 'pin'
+    ? 'Click the map to place the phone there.'
+    : (planMode === 'auto' ? 'Click a start, then a destination.'
+                           : 'Click to add points, then Start route.');
+}
+$('modePin').onclick = () => setMode('pin');
+$('modeRoute').onclick = () => setMode('route');
+
+function setPlanMode(next) {
+  planMode = next;
+  $('planAuto').classList.toggle('on', next === 'auto');
+  $('planManual').classList.toggle('on', next === 'manual');
+  $('autoBox').style.display = next === 'auto' ? '' : 'none';
+  path = next === 'manual' ? anchors.slice() : [];
+  setMode('route');
+  redraw();
+}
+$('planAuto').onclick = () => setPlanMode('auto');
+$('planManual').onclick = () => setPlanMode('manual');
+
+document.querySelectorAll('.prof').forEach(b => {
+  b.onclick = () => {
+    profile = b.dataset.profile;
+    document.querySelectorAll('.prof').forEach(x => x.classList.toggle('on', x === b));
+    if (anchors.length >= 2) planRoute();
+  };
+});
+
+$('planBtn').onclick = planRoute;
+
+document.querySelectorAll('.presets button').forEach(b => {
+  b.onclick = () => { $('speed').value = b.dataset.speed; updateMeta(); };
+});
+$('speed').oninput = updateMeta;
+
+$('startRoute').onclick = async () => {
+  try {
+    await post('/api/route/start', {
+      points: path,
+      speed_mph: parseFloat($('speed').value) || 3,
+      loop: $('loop').checked,
+      pingpong: $('pingpong').checked
+    });
+  } catch (err) { alert('Could not start: ' + err.message); }
+};
+$('stopRoute').onclick = () => post('/api/route/stop').catch(() => {});
+$('undoPoint').onclick = () => {
+  anchors.pop();
+  if (planMode === 'manual') path = anchors.slice();
+  else if (anchors.length >= 2) planRoute(); else path = [];
+  redraw();
+};
+$('clearRoute').onclick = () => { anchors = []; path = []; $('planErr').textContent = ''; redraw(); };
+
+$('goManual').onclick = async () => {
+  const parts = $('manual').value.split(/[,\s]+/).filter(Boolean).map(Number);
+  if (parts.length !== 2 || parts.some(isNaN)) return alert('Enter "latitude, longitude".');
+  const [lat, lon] = parts;
+  try { await post('/api/location', { lat, lon }); } catch (err) { return alert(err.message); }
+  map.setView([lat, lon], Math.max(map.getZoom(), 16));
+};
+
+$('clearAll').onclick = () => post('/api/clear').catch(() => {});
+
+// --------------------------------------------------------------- place search
+let searchTimer = null;
+$('search').oninput = () => {
+  clearTimeout(searchTimer);
+  const q = $('search').value.trim();
+  if (q.length < 3) { $('results').innerHTML = ''; return; }
+  // Nominatim asks for at most one request per second.
+  searchTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/geocode?q=' + encodeURIComponent(q));
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      $('results').innerHTML = '';
+      data.results.forEach(r => {
+        const li = document.createElement('li');
+        li.textContent = r.name;
+        li.title = r.name;
+        li.onclick = () => {
+          map.setView([r.lat, r.lon], 16);
+          $('results').innerHTML = '';
+          $('search').value = '';
+        };
+        $('results').appendChild(li);
+      });
+      if (!data.results.length) $('results').innerHTML = '<li>no matches</li>';
+    } catch (err) {
+      $('results').innerHTML = '<li>search unavailable</li>';
+    }
+  }, 700);
+};
+
+// ------------------------------------------------------------------------ gpx
+$('importBtn').onclick = () => $('gpxFile').click();
+$('gpxFile').onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const res = await fetch('/api/gpx/import', { method: 'POST', body: await file.text() });
+  if (!res.ok) return alert('Import failed: ' + await res.text());
+  const data = await res.json();
+  path = data.points;
+  anchors = [path[0], path[path.length - 1]];
+  setPlanMode('manual');
+  path = data.points;               // setPlanMode reset it to the anchors
+  redraw();
+  map.fitBounds(L.polyline(path).getBounds(), { padding: [40, 40] });
+  e.target.value = '';
+};
+
+$('exportBtn').onclick = async () => {
+  const res = await fetch('/api/gpx/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points: path })
+  });
+  if (!res.ok) return alert('Export failed');
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = 'route.gpx'; a.click();
+  URL.revokeObjectURL(url);
+};
+
+navigator.geolocation?.getCurrentPosition(
+  (p) => { if (!phoneMarker) map.setView([p.coords.latitude, p.coords.longitude], 15); },
+  () => {}, { timeout: 5000 }
+);
+
+redraw();
+</script>
+</body>
+</html>
