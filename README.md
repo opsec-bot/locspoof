@@ -14,6 +14,13 @@ and a supervisor that keeps the tunnel alive. Built directly on pymobiledevice3.
   Settings > Privacy & Security > Developer Mode, then restart.
 - iPhone connected by **USB**, unlocked, and trusting this computer.
 
+Verified end to end on **iOS 26.5.2** with pymobiledevice3 11.12.1 on Windows 10.
+The in-process `UserspaceRsdTunnel` works on that version, so no admin rights and
+no separate `tunneld` process are needed. If a future iOS build breaks that path,
+pymobiledevice3's `tunneld.api.get_tunneld_devices` is the fallback: run
+`pymobiledevice3 lockdown start-tunnel` alongside and attach to the existing RSD
+instead.
+
 ## Run
 
 ```
