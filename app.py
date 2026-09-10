@@ -47,6 +47,10 @@ def main() -> int:
 
     session = LocationSession()
     player = RoutePlayer(setter=session.set_point)
+    # The pin hold and the route player both drive position, so only one may
+    # run at a time. Gating on the player rather than a flag means a route
+    # finishing on its own hands control back automatically.
+    session.hold_gate = lambda: not player.running
     app = build_app(session, player)
 
     url = f"http://{HOST}:{args.port}/"

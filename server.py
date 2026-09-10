@@ -115,6 +115,12 @@ def build_app(session: LocationSession, player: RoutePlayer) -> web.Application:
         await player.stop()
         return web.json_response(await session.clear())
 
+    async def set_jitter(request: web.Request) -> web.StreamResponse:
+        """Toggle the wander applied to a stationary pin."""
+        body = await request.json()
+        session.pin_jitter_enabled = bool(body.get("enabled", True))
+        return web.json_response({"ok": True, "enabled": session.pin_jitter_enabled})
+
     async def route_start(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         raw = body.get("points") or []
@@ -161,6 +167,8 @@ def build_app(session: LocationSession, player: RoutePlayer) -> web.Application:
             pingpong=bool(body.get("pingpong")),
             plan=plan,
             route=route,
+            jitter=bool(body.get("jitter", True)),
+            jitter_seed=body.get("seed"),
         )
         snapshot = player.snapshot()
         if plan is not None:
@@ -244,6 +252,7 @@ def build_app(session: LocationSession, player: RoutePlayer) -> web.Application:
             web.get("/api/events", events),
             web.post("/api/location", set_location),
             web.post("/api/clear", clear_location),
+            web.post("/api/jitter", set_jitter),
             web.post("/api/route/start", route_start),
             web.post("/api/route/stop", route_stop),
             web.post("/api/route/plan", route_plan),

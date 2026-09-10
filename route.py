@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence
 import gpxpy
 import gpxpy.gpx
 
+from jitter import GpsJitter
+
 if TYPE_CHECKING:
     # motion imports Route from here, so this stays type-only to avoid a cycle.
     from motion import MotionPlan
@@ -146,6 +148,9 @@ class RoutePlayer:
         self.finished: bool = False
         self.waiting: bool = False           # true while sitting at a stop
         self.stops_remaining: int = 0
+        # Positional wander. Matters most while waiting at a stop, where the
+        # true position is frozen and only this keeps the fix alive.
+        self.jitter: Optional[GpsJitter] = None
 
     def add_listener(self, cb: Callable[[], None]) -> None:
         self._listeners.append(cb)
@@ -196,8 +201,11 @@ class RoutePlayer:
         tick_hz: float = DEFAULT_TICK_HZ,
         plan: Optional["MotionPlan"] = None,
         route: Optional[Route] = None,
+        jitter: bool = True,
+        jitter_seed: Optional[int] = None,
     ) -> None:
         await self.stop()
+        self.jitter = GpsJitter(seed=jitter_seed) if jitter else None
         # The caller may already have built the Route to construct the plan
         # against; reuse it so distances line up exactly.
         self.route = route if route is not None else Route(points)
@@ -251,7 +259,7 @@ class RoutePlayer:
                 if now < dwell_until:
                     self.waiting = True
                     self.current_speed_mps = 0.0
-                    await self._push(self.route.at_distance(self.distance_m))
+                    await self._push(self.route.at_distance(self.distance_m), elapsed)
                     self._on_change()
                     await asyncio.sleep(interval)
                     continue
@@ -273,7 +281,7 @@ class RoutePlayer:
                     self.waiting = True
                     self.current_speed_mps = 0.0
                     log.debug("stopping %.1fs at %.0fm (%s)", stop.dwell_s, stop.distance_m, stop.reason)
-                    await self._push(self.route.at_distance(self.distance_m))
+                    await self._push(self.route.at_distance(self.distance_m), elapsed)
                     self._on_change()
                     await asyncio.sleep(interval)
                     continue
@@ -291,7 +299,7 @@ class RoutePlayer:
                         # Land exactly on the last point rather than past it,
                         # push once more, and stop.
                         self.distance_m = self.route.length_m
-                        await self._push(self.route.at_distance(self.distance_m))
+                        await self._push(self.route.at_distance(self.distance_m), elapsed)
                         self.running = False
                         self.finished = True
                         self._on_change()
@@ -313,7 +321,7 @@ class RoutePlayer:
                         self._on_change()
                         return
 
-                await self._push(self.route.at_distance(self.distance_m))
+                await self._push(self.route.at_distance(self.distance_m), elapsed)
                 self._on_change()
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -323,7 +331,11 @@ class RoutePlayer:
             self.running = False
             self._on_change()
 
-    async def _push(self, point: Point) -> None:
+    async def _push(self, point: Point, dt_s: float = 0.0) -> None:
+        # Wander is applied to the true position rather than baked into it, so
+        # progress along the route stays exact while the reported fix drifts.
+        if self.jitter is not None:
+            point = self.jitter.apply(point, dt_s, self.current_speed_mps)
         # A failed push means the channel dropped. The session records the
         # coordinate anyway and re-applies it on reconnect, so playback keeps
         # its own clock running rather than stalling.

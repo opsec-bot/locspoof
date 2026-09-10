@@ -186,6 +186,10 @@
       <label title="Use each road's own speed limit, capped by the mph above">
         <input type="checkbox" id="roadSpeeds" checked> road speeds</label>
     </div>
+    <div class="check">
+      <label title="Wander the reported fix by a few metres, the way a real receiver does. Applies to a parked pin as well as a route.">
+        <input type="checkbox" id="jitter" checked> GPS drift</label>
+    </div>
     <div class="bar"><div id="prog"></div></div>
     <div class="meta" id="routeMeta">no route yet</div>
     <button class="act primary" id="startRoute" disabled>Start route</button>
@@ -504,7 +508,8 @@ $('startRoute').onclick = async () => {
       profile: profile,
       realistic: $('realistic').checked,
       use_road_speeds: $('roadSpeeds').checked,
-      stops: $('realistic').checked
+      stops: $('realistic').checked,
+      jitter: $('jitter').checked
     });
     if (res.realistic) {
       const mins = (res.estimated_s / 60).toFixed(1);
@@ -531,6 +536,10 @@ $('goManual').onclick = async () => {
 };
 
 $('clearAll').onclick = () => post('/api/clear').catch(() => {});
+
+// The same switch governs a parked pin, which the server holds and wanders on
+// its own clock, so it has to be pushed as it changes rather than only at start.
+$('jitter').onchange = () => post('/api/jitter', { enabled: $('jitter').checked }).catch(() => {});
 
 // --------------------------------------------------------------- place search
 let searchTimer = null;

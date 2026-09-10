@@ -160,6 +160,35 @@ rather than you turning.
 
 Seed the plan to get the same stops every run; leave it off for fresh ones.
 
+### GPS drift
+
+Two things give a simulated fix away even when the coordinates are plausible: a
+parked phone reporting byte-identical coordinates for thirty seconds, and a
+moving one sitting exactly on the road centreline. Real receivers do neither.
+
+`jitter.py` is an Ornstein-Uhlenbeck process, which is the standard model for
+correlated, mean-reverting drift:
+
+    dx = -(x / tau) dt + sigma * sqrt(2 dt / tau) dW
+
+Independent noise per tick would look like television static and be trivially
+separable from a real trace; this drifts smoothly instead, with a measured
+lag-1 correlation of about 0.9. Being mean-reverting it never walks away, so
+the position stays honest over a long session: 15 m was the worst excursion in
+100,000 steps.
+
+Spread is about 3 m stationary and 1.5 m moving, since a receiver averaging over
+a moving baseline reports a tighter fix than one sitting still among buildings.
+The initial offset is drawn from the equilibrium distribution rather than zero,
+because a first fix that is perfectly accurate is itself a tell.
+
+Drift is applied to a *copy* of the true position, so progress along a route
+stays exact while only the reported fix wanders.
+
+A parked pin gets the same treatment: `device.py` re-pushes it once a second
+with fresh drift. That loop is gated on the route player rather than a flag, so
+a route finishing on its own hands control back with nothing to reset.
+
 ### Reconnect behaviour
 
 The supervisor is a state machine:

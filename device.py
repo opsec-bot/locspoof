@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from jitter import GpsJitter
 from pymobiledevice3 import usbmux
 from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
@@ -28,6 +29,10 @@ log = logging.getLogger("locspoof.device")
 DEVICE_POLL_SECONDS = 2.0
 BACKOFF_START = 2.0
 BACKOFF_MAX = 30.0
+
+# How often a stationary pin is re-pushed with fresh wander. Roughly the rate a
+# real handset produces fixes, and slow enough to be negligible traffic.
+HOLD_INTERVAL_SECONDS = 1.0
 
 # iOS 17+ is required for the RSD / userspace-tunnel path used here.
 MIN_IOS_MAJOR = 17
@@ -53,6 +58,18 @@ class LocationSession:
         self.desired: Optional[tuple[float, float]] = None
         self.applied_at: Optional[float] = None
 
+        # A pinned location that reports byte-identical coordinates forever is
+        # the loudest tell there is, so the hold loop keeps it wandering the way
+        # a real stationary receiver does. Suppressed while a route drives the
+        # position, since the player applies its own wander.
+        self.pin_jitter_enabled: bool = True
+        # Returns True when the hold loop may drive the position. Wired to the
+        # route player, so a route finishing on its own hands control back
+        # without anyone having to remember to clear a flag.
+        self.hold_gate: Optional[Callable[[], bool]] = None
+        self._pin_jitter = GpsJitter()
+        self._hold_task: Optional[asyncio.Task[None]] = None
+
         self._loc: Optional[LocationSimulation] = None
         self._apply_lock = asyncio.Lock()
         self._channel_failed = asyncio.Event()
@@ -64,14 +81,16 @@ class LocationSession:
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._supervise(), name="locspoof-supervisor")
+        self._hold_task = asyncio.create_task(self._hold_pin(), name="locspoof-hold")
 
     async def aclose(self) -> None:
         self._stop.set()
         self._channel_failed.set()
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        for task in (self._hold_task, self._task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     # ------------------------------------------------------------- observation
 
@@ -151,6 +170,31 @@ class LocationSession:
                 return False, str(exc)
             self.applied_at = time.time()
             return True, None
+
+    async def _hold_pin(self) -> None:
+        """Keep a stationary pin alive by re-pushing it with fresh wander.
+
+        Only runs when nothing else is driving the position. The wander is
+        applied to a copy: `self.desired` stays the true point, so the drift
+        never accumulates into it.
+        """
+        while not self._stop.is_set():
+            await self._sleep(HOLD_INTERVAL_SECONDS)
+            if not self.pin_jitter_enabled:
+                continue
+            if self.hold_gate is not None and not self.hold_gate():
+                continue
+            if self.state != "ready" or self.desired is None:
+                continue
+            lat, lon = self._pin_jitter.apply(self.desired, HOLD_INTERVAL_SECONDS, 0.0)
+            async with self._apply_lock:
+                loc = self._loc
+                if loc is None:
+                    continue
+                try:
+                    await loc.set(lat, lon)
+                except Exception as exc:
+                    self._fail(f"hold failed: {exc}")
 
     def _fail(self, detail: str) -> None:
         """Mark the current channel dead so the supervisor rebuilds it."""
