@@ -160,6 +160,53 @@ rather than you turning.
 
 Seed the plan to get the same stops every run; leave it off for fresh ones.
 
+### Untethered over Wi-Fi
+
+The cable is only needed once. After a single pairing step the phone can be
+driven over the network with nothing plugged in.
+
+One time, with the phone connected by USB:
+
+```
+python -m pymobiledevice3 lockdown remotepairing --pair
+```
+
+That handshake runs over the already-trusted lockdownd transport, so it is
+promptless: no Trust dialog appears. It writes the RemotePairing pair record
+that Wi-Fi discovery depends on. Confirm it took with
+`python -m pymobiledevice3 remote browse`, which should list the phone under
+`wifi` once the cable is out.
+
+From then on `locspoof` finds the phone by itself. USB is preferred whenever the
+cable is present, because it establishes faster and cannot be disturbed by the
+network; Wi-Fi is used otherwise. The status line says which link is live.
+
+**How it works.** iOS 17.4+ exposes CoreDeviceProxy over lockdown, so
+pymobiledevice3's no-root helper always bootstraps over USB and only falls back
+to RemotePairing over Bonjour for older devices. That is a policy in the helper,
+not a limit of the device: a modern iPhone advertises `_remotepairing._tcp` on
+the LAN and serves the same tunnel over Wi-Fi.
+
+`UserspaceRsdTunnel._aopen_locked` is entirely transport-agnostic apart from one
+call to the module-level `_create_no_root_tunnel_provider`, which hard-codes the
+USB bootstrap. `wireless.py` swaps that single function for the duration of
+`aopen()`, which reuses the library's whole lifecycle: the process-global
+single-tunnel guard, the PyTCP tun, the dial plane, the RSD handshake and the
+AsyncExitStack teardown. Reimplementing `_aopen_locked` would have to reach into
+those same private globals to stay correct, and would rot faster.
+
+Discovery deduplicates by identifier, since Bonjour answers on every interface
+and the same phone comes back over both IPv4 and IPv6.
+
+Two things to know. Bonjour only returns devices that already hold a pair record
+locally, so discovery finding nothing usually means the pairing step has not been
+done rather than that the phone is unreachable. And a Wi-Fi session cannot poll
+usbmux for presence the way a USB one does, so it relies on the tunnel's own
+transport watcher to notice the link dying.
+
+Measured on an iPhone 15 Pro on iOS 26.5.2: discovery about 3 s, tunnel up in
+0.6 s, DVT channel open 0.2 s later.
+
 ### GPS drift
 
 Two things give a simulated fix away even when the coordinates are plausible: a

@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+import wireless
 from jitter import GpsJitter
 from pymobiledevice3 import usbmux
 from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
@@ -52,6 +53,9 @@ class LocationSession:
         self.device_name: Optional[str] = None
         self.serial: Optional[str] = None
         self.ios_version: Optional[str] = None
+        # "usb" or "wifi". USB is preferred whenever the cable is present: it is
+        # faster to establish and cannot be disrupted by the network.
+        self.transport: Optional[str] = None
 
         # The coordinate we want the phone to report. Survives reconnects and is
         # re-applied automatically, so a dropped cable resumes the same spoof.
@@ -62,6 +66,12 @@ class LocationSession:
         # the loudest tell there is, so the hold loop keeps it wandering the way
         # a real stationary receiver does. Suppressed while a route drives the
         # position, since the player applies its own wander.
+        # Wi-Fi fallback. Works only for a device already holding a RemotePairing
+        # record, created once over the cable; see wireless.py.
+        self.wireless_enabled: bool = True
+        self.prefer_serial: Optional[str] = None
+        self._usbmux_error: Optional[str] = None
+
         self.pin_jitter_enabled: bool = True
         # Returns True when the hold loop may drive the position. Wired to the
         # route player, so a route finishing on its own hands control back
@@ -122,6 +132,7 @@ class LocationSession:
             "device_name": self.device_name,
             "serial": self.serial,
             "ios_version": self.ios_version,
+            "transport": self.transport,
             "desired": list(self.desired) if self.desired else None,
             "applied_at": self.applied_at,
         }
@@ -203,37 +214,77 @@ class LocationSession:
         self._set_state("error", detail)
         self._channel_failed.set()
 
-    async def _find_device(self) -> Optional[Any]:
+    async def _find_usb(self) -> Optional[str]:
+        """Serial of the first phone on the cable, if any."""
         try:
             devices = await usbmux.list_devices()
         except Exception as exc:
             # usbmuxd ships with Apple Mobile Device Support. Without it there is
-            # no USB transport at all, which is the most common Windows failure
-            # and deserves its own message rather than a generic error.
-            self._set_state(
-                "no_usbmux",
-                f"cannot reach Apple Mobile Device Service ({exc}). Install Apple Devices or iTunes.",
-            )
+            # no USB transport at all, which is the most common Windows failure.
+            # Not fatal any more: a device already paired for RemotePairing can
+            # still be reached over Wi-Fi.
+            self._usbmux_error = str(exc)
             return None
+        self._usbmux_error = None
         usb = [d for d in devices if d.connection_type == "USB"]
-        return usb[0] if usb else None
+        return usb[0].serial if usb else None
+
+    async def _find_target(self) -> Optional[tuple[str, str, Any]]:
+        """Locate the phone as (transport, serial, wifi_service).
+
+        USB wins whenever the cable is present: it establishes faster and cannot
+        be knocked over by the network. Wi-Fi is the fallback, and only finds
+        devices that already hold a RemotePairing record from a one-time
+        `pymobiledevice3 lockdown remotepairing --pair` over the cable.
+        """
+        serial = await self._find_usb()
+        if serial is not None:
+            return ("usb", serial, None)
+
+        if not self.wireless_enabled:
+            return None
+
+        services = await wireless.discover(udid=self.prefer_serial)
+        if not services:
+            return None
+        service = services[0]
+        # Anything beyond the first is a duplicate device we will not use.
+        for extra in services[1:]:
+            with contextlib.suppress(Exception):
+                await extra.close()
+        return ("wifi", getattr(service, "remote_identifier", "") or "", service)
 
     async def _supervise(self) -> None:
         backoff = BACKOFF_START
         while not self._stop.is_set():
-            device = await self._find_device()
-            if device is None:
-                if self.state != "no_usbmux":
-                    self._set_state("no_device", "plug in your iPhone over USB and unlock it")
+            target = await self._find_target()
+            if target is None:
+                if self._usbmux_error and not self.wireless_enabled:
+                    self._set_state(
+                        "no_usbmux",
+                        f"cannot reach Apple Mobile Device Service ({self._usbmux_error}). "
+                        "Install Apple Devices or iTunes.",
+                    )
+                else:
+                    self._set_state(
+                        "no_device",
+                        "connect your iPhone by USB, or join it to this network once paired",
+                    )
                 self.serial = None
                 self.device_name = None
+                self.transport = None
                 await self._sleep(DEVICE_POLL_SECONDS)
                 continue
 
-            self.serial = device.serial
-            self._set_state("connecting", "bringing up the tunnel")
+            transport, serial, service = target
+            self.serial = serial
+            self.transport = transport
+            self._set_state(
+                "connecting",
+                "bringing up the tunnel" if transport == "usb" else "bringing up the Wi-Fi tunnel",
+            )
             try:
-                await self._run_session(device.serial)
+                await self._run_session(serial, transport, service)
                 backoff = BACKOFF_START  # clean exit means the phone went away
             except asyncio.CancelledError:
                 raise
@@ -243,11 +294,19 @@ class LocationSession:
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
 
-    async def _run_session(self, serial: str) -> None:
+    async def _run_session(
+        self, serial: str, transport: str = "usb", service: Any = None
+    ) -> None:
         """One full tunnel lifetime. Returns when the phone or channel goes away."""
         self._channel_failed.clear()
         tunnel = UserspaceRsdTunnel(serial=serial, autopair=True)
-        rsd = await tunnel.aopen()
+        if transport == "wifi":
+            # The override only has to be in place while the tunnel opens; the
+            # provider lands on the tunnel's exit stack and outlives it.
+            async with wireless.provider_override(service):
+                rsd = await tunnel.aopen()
+        else:
+            rsd = await tunnel.aopen()
         try:
             self.ios_version = getattr(rsd, "product_version", None)
             self.device_name = getattr(rsd, "name", None) or serial
@@ -263,7 +322,7 @@ class LocationSession:
                     # Re-apply whatever was active before the drop.
                     if self.desired is not None:
                         await self._apply()
-                    await self._hold(serial)
+                    await self._hold(serial, transport)
         finally:
             self._loc = None
             with contextlib.suppress(Exception):
@@ -278,8 +337,19 @@ class LocationSession:
         except (ValueError, IndexError):
             return True
 
-    async def _hold(self, serial: str) -> None:
-        """Stay in 'ready' until the phone unplugs or a DTX call fails."""
+    async def _hold(self, serial: str, transport: str = "usb") -> None:
+        """Stay in 'ready' until the phone goes away or a DTX call fails.
+
+        On Wi-Fi there is no usbmux presence to poll, and polling it would see an
+        empty list and immediately conclude the phone had vanished. The tunnel's
+        own transport watcher already tears the session down when the connection
+        dies, which surfaces here as a channel failure, so waiting on that alone
+        is both sufficient and correct.
+        """
+        if transport == "wifi":
+            await self._channel_failed.wait()
+            return
+
         while not self._stop.is_set():
             failed = asyncio.create_task(self._channel_failed.wait())
             timer = asyncio.create_task(asyncio.sleep(DEVICE_POLL_SECONDS))

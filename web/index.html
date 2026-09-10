@@ -298,8 +298,13 @@ function applyStatus(s) {
   $('dot').className = 'dot ' + (d.state === 'ready' ? 'ready'
     : d.state === 'connecting' ? 'connecting'
     : (d.state === 'error' || d.state === 'no_usbmux') ? 'error' : '');
-  $('statusText').textContent = STATUS_TEXT[d.state] || d.state;
-  $('ver').textContent = d.device_name ? (d.device_name + (d.ios_version ? ' · iOS ' + d.ios_version : '')) : '';
+  // Transport matters to the user: on Wi-Fi the cable can stay unplugged, but
+  // the link is only as good as the network.
+  const link = d.transport === 'wifi' ? ' · Wi-Fi' : d.transport === 'usb' ? ' · USB' : '';
+  $('statusText').textContent = (STATUS_TEXT[d.state] || d.state) + (d.state === 'ready' ? link : '');
+  $('ver').textContent = d.device_name || d.ios_version
+    ? [d.device_name, d.ios_version ? 'iOS ' + d.ios_version : ''].filter(Boolean).join(' · ')
+    : '';
   $('detail').textContent = d.detail || '';
 
   if (d.desired) {
