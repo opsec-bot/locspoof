@@ -180,6 +180,12 @@
       <label><input type="checkbox" id="loop"> loop</label>
       <label><input type="checkbox" id="pingpong"> back and forth</label>
     </div>
+    <div class="check">
+      <label title="Accelerate, brake for corners, and wait at junctions instead of gliding at a constant speed">
+        <input type="checkbox" id="realistic" checked> realistic motion</label>
+      <label title="Use each road's own speed limit, capped by the mph above">
+        <input type="checkbox" id="roadSpeeds" checked> road speeds</label>
+    </div>
     <div class="bar"><div id="prog"></div></div>
     <div class="meta" id="routeMeta">no route yet</div>
     <button class="act primary" id="startRoute" disabled>Start route</button>
@@ -254,6 +260,7 @@ let profile = 'drive';
 let anchors = [];             // what the user clicked
 let path = [];                // what actually gets played (planned or manual)
 let pathLine = null, anchorMarkers = [], phoneMarker = null, activeLine = null;
+let stopLayer = null;         // junction stops for the current run
 let routeRunning = false;
 
 const $ = (id) => document.getElementById(id);
@@ -308,12 +315,29 @@ function applyStatus(s) {
   if (r.running && r.points.length) {
     if (!activeLine) activeLine = L.polyline(r.points, { color: '#2f81f7', weight: 5, opacity: .9 }).addTo(map);
     else activeLine.setLatLngs(r.points);
-    const remain = (r.length_m - r.distance_m) / (r.speed_mph * 0.44704);
+
+    // Stops are fixed for the run, so draw them once rather than every tick.
+    if (r.stop_points.length && !stopLayer) {
+      stopLayer = L.layerGroup(r.stop_points.map(p =>
+        L.circleMarker(p, {
+          radius: 4, color: '#d29922', weight: 2,
+          fillColor: '#161b22', fillOpacity: 1
+        }).bindTooltip('stop')
+      )).addTo(map);
+    }
+
+    // With a motion plan the requested speed is only a ceiling, so report what
+    // the phone is actually doing rather than the setting.
+    const shown = r.realistic
+      ? (r.waiting ? 'stopped' : r.current_mph.toFixed(0) + ' mph')
+      : r.speed_mph + ' mph';
+    const left = r.realistic && r.stops_total
+      ? ` · ${r.stops_remaining}/${r.stops_total} stops left` : '';
     $('routeMeta').textContent =
-      `${miles(r.distance_m)} / ${miles(r.length_m)} · ${r.speed_mph} mph · ` +
-      `${remain < 90 ? Math.round(remain) + 's' : Math.round(remain / 60) + 'min'} left`;
+      `${miles(r.distance_m)} / ${miles(r.length_m)} · ${shown}${left}`;
   } else {
     if (activeLine) { map.removeLayer(activeLine); activeLine = null; }
+    if (stopLayer) { map.removeLayer(stopLayer); stopLayer = null; }
     updateMeta();
   }
 }
@@ -472,12 +496,21 @@ $('speed').oninput = updateMeta;
 
 $('startRoute').onclick = async () => {
   try {
-    await post('/api/route/start', {
+    const res = await post('/api/route/start', {
       points: path,
       speed_mph: parseFloat($('speed').value) || 3,
       loop: $('loop').checked,
-      pingpong: $('pingpong').checked
+      pingpong: $('pingpong').checked,
+      profile: profile,
+      realistic: $('realistic').checked,
+      use_road_speeds: $('roadSpeeds').checked,
+      stops: $('realistic').checked
     });
+    if (res.realistic) {
+      const mins = (res.estimated_s / 60).toFixed(1);
+      $('planHint').textContent =
+        `${res.stops_total} stops, ${Math.round(res.dwell_s)}s waiting, ~${mins} min total`;
+    }
   } catch (err) { alert('Could not start: ' + err.message); }
 };
 $('stopRoute').onclick = () => post('/api/route/stop').catch(() => {});

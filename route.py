@@ -11,10 +11,14 @@ import contextlib
 import logging
 import math
 import time
-from typing import Any, Awaitable, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence
 
 import gpxpy
 import gpxpy.gpx
+
+if TYPE_CHECKING:
+    # motion imports Route from here, so this stays type-only to avoid a cycle.
+    from motion import MotionPlan
 
 log = logging.getLogger("locspoof.route")
 
@@ -61,6 +65,21 @@ class Route:
     @property
     def length_m(self) -> float:
         return self.cumulative[-1]
+
+    def distance_of_nearest(self, target: Point) -> float:
+        """Distance along the route of the vertex closest to `target`.
+
+        Used to place junctions and turn manoeuvres, which OSRM reports as bare
+        coordinates, onto the one-dimensional distance axis the motion profile
+        works in. Vertex resolution is enough: OSRM puts these points on the
+        geometry it returned, so the nearest vertex is the right one.
+        """
+        best_index, best_distance = 0, float("inf")
+        for i, point in enumerate(self.points):
+            d = haversine_m(point, target)
+            if d < best_distance:
+                best_index, best_distance = i, d
+        return self.cumulative[best_index]
 
     def at_distance(self, metres: float) -> Point:
         """Position at `metres` along the polyline, clamped to the endpoints."""
@@ -117,12 +136,16 @@ class RoutePlayer:
         self._task: Optional[asyncio.Task[None]] = None
 
         self.route: Optional[Route] = None
-        self.speed_mps: float = 1.4
+        self.speed_mps: float = 1.4          # used only when there is no plan
+        self.plan: Optional["MotionPlan"] = None
+        self.current_speed_mps: float = 0.0  # what the phone is doing right now
         self.loop: bool = False
         self.pingpong: bool = False
         self.distance_m: float = 0.0
         self.running: bool = False
         self.finished: bool = False
+        self.waiting: bool = False           # true while sitting at a stop
+        self.stops_remaining: int = 0
 
     def add_listener(self, cb: Callable[[], None]) -> None:
         self._listeners.append(cb)
@@ -147,10 +170,21 @@ class RoutePlayer:
             "length_m": round(length_m, 1),
             "distance_mi": round(self.distance_m / METERS_PER_MILE, 3),
             "length_mi": round(length_m / METERS_PER_MILE, 3),
+            # speed_mph is the setting; current_mph is what it is doing now,
+            # which differs the whole time once a motion plan is driving.
             "speed_mph": round(self.speed_mps / MPH_TO_MPS, 1),
+            "current_mph": round(self.current_speed_mps / MPH_TO_MPS, 1),
+            "waiting": self.waiting,
+            "realistic": self.plan is not None,
+            "stops_total": len(self.plan.stops) if self.plan else 0,
+            "stops_remaining": self.stops_remaining,
             "loop": self.loop,
             "pingpong": self.pingpong,
             "points": self.route.points if self.route else [],
+            "stop_points": (
+                [self.route.at_distance(s.distance_m) for s in self.plan.stops]
+                if self.plan and self.route else []
+            ),
         }
 
     async def start(
@@ -160,10 +194,18 @@ class RoutePlayer:
         loop: bool = False,
         pingpong: bool = False,
         tick_hz: float = DEFAULT_TICK_HZ,
+        plan: Optional["MotionPlan"] = None,
+        route: Optional[Route] = None,
     ) -> None:
         await self.stop()
-        self.route = Route(points)
+        # The caller may already have built the Route to construct the plan
+        # against; reuse it so distances line up exactly.
+        self.route = route if route is not None else Route(points)
         self.speed_mps = max(0.05, speed_mph * MPH_TO_MPS)
+        self.plan = plan
+        self.current_speed_mps = 0.0
+        self.waiting = False
+        self.stops_remaining = len(plan.stops) if plan else 0
         self.loop = loop
         self.pingpong = pingpong
         self.distance_m = 0.0
@@ -181,11 +223,19 @@ class RoutePlayer:
             self._task = None
         self._on_change()
 
+    def _arm_stops(self) -> list[Any]:
+        """Fresh copy of the stop list, in order. Re-armed on every forward lap."""
+        if not self.plan:
+            return []
+        return sorted(self.plan.stops, key=lambda s: s.distance_m)
+
     async def _run(self, tick_hz: float) -> None:
         assert self.route is not None
         interval = 1.0 / tick_hz
         direction = 1  # +1 forward along the polyline, -1 back toward the start
         last = time.monotonic()
+        pending = self._arm_stops()
+        dwell_until = 0.0
         try:
             while True:
                 # Integrate against the wall clock rather than assuming each tick
@@ -195,7 +245,38 @@ class RoutePlayer:
                 now = time.monotonic()
                 elapsed = now - last
                 last = now
-                self.distance_m += self.speed_mps * elapsed * direction
+
+                # Waiting at a stop. Position is frozen, so anything reading the
+                # phone sees a genuine standstill, not a slow crawl.
+                if now < dwell_until:
+                    self.waiting = True
+                    self.current_speed_mps = 0.0
+                    await self._push(self.route.at_distance(self.distance_m))
+                    self._on_change()
+                    await asyncio.sleep(interval)
+                    continue
+                self.waiting = False
+
+                # With a plan, speed comes from the profile and changes every
+                # tick. Without one, it is the flat speed the caller asked for.
+                speed = self.plan.speed_at(self.distance_m) if self.plan else self.speed_mps
+                self.current_speed_mps = speed
+                self.distance_m += speed * elapsed * direction
+
+                # Reached the next stop. Land on it exactly rather than
+                # overshooting, then start the dwell timer.
+                if direction == 1 and pending and self.distance_m >= pending[0].distance_m:
+                    stop = pending.pop(0)
+                    self.distance_m = stop.distance_m
+                    dwell_until = now + stop.dwell_s
+                    self.stops_remaining = len(pending)
+                    self.waiting = True
+                    self.current_speed_mps = 0.0
+                    log.debug("stopping %.1fs at %.0fm (%s)", stop.dwell_s, stop.distance_m, stop.reason)
+                    await self._push(self.route.at_distance(self.distance_m))
+                    self._on_change()
+                    await asyncio.sleep(interval)
+                    continue
 
                 if self.distance_m >= self.route.length_m:
                     # Reached the far end.
@@ -204,6 +285,8 @@ class RoutePlayer:
                         direction = -1
                     elif self.loop:
                         self.distance_m = 0.0  # teleports back to the start
+                        pending = self._arm_stops()
+                        self.stops_remaining = len(pending)
                     else:
                         # Land exactly on the last point rather than past it,
                         # push once more, and stop.
@@ -220,6 +303,10 @@ class RoutePlayer:
                     self.distance_m = 0.0
                     if self.pingpong:
                         direction = 1
+                        # Stops only fire going forward, so a new forward leg
+                        # gets a fresh set.
+                        pending = self._arm_stops()
+                        self.stops_remaining = len(pending)
                     else:
                         self.running = False
                         self.finished = True

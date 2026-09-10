@@ -46,6 +46,13 @@ Use this for open water, off-road, or when the routing servers are down.
 **Speed** is in mph, with presets from walking to highway. `loop` restarts each
 lap; `back and forth` reverses at the end instead.
 
+**Realistic motion** (on by default) makes the phone accelerate from rest, brake
+for corners, obey each road's own speed limit, and wait at junctions. With it
+off you get the old behaviour: a constant glide down the line. **Road speeds**
+uses OSRM's per-segment speed for each street; the mph box then acts as a
+ceiling rather than a fixed speed, so a 45 mph setting still crawls through a
+car park.
+
 **GPX** — import a `.gpx` to load it as a route, or export what you have drawn.
 
 **Stop spoofing** restores the real GPS without quitting.
@@ -109,6 +116,42 @@ servers go down often:
 If every engine fails the UI says so and suggests straight-line mode, rather
 than leaving you with a dead button. Planning is proxied through the local
 server, not the browser, so there is one place for the fallback logic.
+
+### Motion model
+
+Constant speed is the loudest tell a simulated location has. Nothing real holds
+11.176 m/s for twenty minutes, takes a right angle without slowing, or crosses
+forty junctions without ever waiting.
+
+`motion.py` turns a route into a velocity profile, built once in four passes:
+
+1. A speed ceiling per sample, from OSRM's per-segment speeds.
+2. Corner braking, from the turn angle at each vertex.
+3. Stops, chosen at real junctions and turn manoeuvres.
+4. A forward pass limiting acceleration and a backward pass limiting
+   deceleration.
+
+Pass 4 is what sells it. Sweeping `v² = u² + 2as` forwards bounds how fast speed
+can rise, sweeping it backwards bounds how late braking can start, and the
+pointwise minimum is the fastest profile physically reachable under the ceiling.
+The phone eases away from a stop and brakes into it instead of teleporting
+between speeds.
+
+Two details that matter:
+
+- **A stop's speed floor is not zero.** The player advances by `v * dt`, so a
+  true zero would mean never arriving at the point it is braking for. The
+  vehicle creeps in at 0.6 m/s and the standstill is a dwell timer, during
+  which the position does not change at all.
+- **Routes start and end at rest**, for the same reason and by the same
+  mechanism. A phone that appears already doing 45 mph is not a journey.
+
+Junctions come from OSRM's `intersections`, filtered to nodes with three or more
+bearings; two bearings is just the road bending. Turns come from `maneuver.type`,
+excluding `new name` and `continue`, which are the road changing name under you
+rather than you turning.
+
+Seed the plan to get the same stops every run; leave it off for fresh ones.
 
 ### Reconnect behaviour
 
