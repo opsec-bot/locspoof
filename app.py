@@ -30,7 +30,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="loopback port to serve on")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    parser.add_argument(
+        "--device-address",
+        metavar="HOST[:PORT]",
+        help="reach the phone at this address instead of discovering it. Bonjour "
+        "stops at the first router, so this is what you need over a VPN.",
+    )
+    parser.add_argument(
+        "--device-udid",
+        help="which paired device to reach. Inferred when only one is paired.",
+    )
+    parser.add_argument("--no-wireless", action="store_true", help="USB only")
     return parser.parse_args()
+
+
+def parse_address(value: str) -> tuple[str, int]:
+    """Split HOST[:PORT], tolerating bracketed IPv6 such as [fd89::1]:49152."""
+    from wireless import DEFAULT_REMOTEPAIRING_PORT
+
+    if value.startswith("["):
+        host, _, rest = value[1:].partition("]")
+        port = rest.lstrip(":")
+        return host, int(port) if port else DEFAULT_REMOTEPAIRING_PORT
+    # A bare IPv6 literal has several colons; only treat the last as a port
+    # separator when there is exactly one.
+    if value.count(":") == 1:
+        host, _, port = value.partition(":")
+        return host, int(port)
+    return value, DEFAULT_REMOTEPAIRING_PORT
 
 
 def main() -> int:
@@ -46,6 +73,10 @@ def main() -> int:
     )
 
     session = LocationSession()
+    session.wireless_enabled = not args.no_wireless
+    session.prefer_serial = args.device_udid
+    if args.device_address:
+        session.wireless_address = parse_address(args.device_address)
     player = RoutePlayer(setter=session.set_point)
     # The pin hold and the route player both drive position, so only one may
     # run at a time. Gating on the player rather than a flag means a route

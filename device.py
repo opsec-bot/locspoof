@@ -70,6 +70,10 @@ class LocationSession:
         # record, created once over the cable; see wireless.py.
         self.wireless_enabled: bool = True
         self.prefer_serial: Optional[str] = None
+        # Explicit (host, port) to reach the phone at, skipping Bonjour. Bonjour
+        # is multicast and stops at the first router; an address works anywhere
+        # the phone is routable, including over a VPN.
+        self.wireless_address: Optional[tuple[str, int]] = None
         self._usbmux_error: Optional[str] = None
 
         self.pin_jitter_enabled: bool = True
@@ -242,6 +246,15 @@ class LocationSession:
             return ("usb", serial, None)
 
         if not self.wireless_enabled:
+            return None
+
+        # An explicit address beats discovery: it is faster, and it is the only
+        # option once the phone is off this LAN.
+        if self.wireless_address is not None:
+            host, port = self.wireless_address
+            service = await wireless.connect_direct(host, port, identifier=self.prefer_serial)
+            if service is not None:
+                return ("wifi", getattr(service, "remote_identifier", "") or "", service)
             return None
 
         services = await wireless.discover(udid=self.prefer_serial)

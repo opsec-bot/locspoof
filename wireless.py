@@ -30,6 +30,10 @@ log = logging.getLogger("locspoof.wireless")
 
 DISCOVERY_TIMEOUT = 3.0
 
+# The port iOS advertises its RemotePairing tunnel service on. Stable in
+# practice, but `pymobiledevice3 remote browse` prints the real one.
+DEFAULT_REMOTEPAIRING_PORT = 49152
+
 
 async def discover(udid: Optional[str] = None, timeout: float = DISCOVERY_TIMEOUT) -> list[Any]:
     """Find RemotePairing tunnel services for this device on the local network.
@@ -67,6 +71,52 @@ async def discover(udid: Optional[str] = None, timeout: float = DISCOVERY_TIMEOU
             ", ".join(f"{getattr(s, 'hostname', '?')}:{getattr(s, 'port', '?')}" for s in unique),
         )
     return unique
+
+
+def paired_identifiers() -> list[str]:
+    """UDIDs that already hold a RemotePairing record on this machine."""
+    try:
+        from pymobiledevice3 import pair_records
+
+        return list(pair_records.iter_remote_paired_identifiers())
+    except Exception as exc:
+        log.debug("could not read pair records: %s", exc)
+        return []
+
+
+async def connect_direct(
+    hostname: str, port: int = DEFAULT_REMOTEPAIRING_PORT, identifier: Optional[str] = None
+) -> Optional[Any]:
+    """Connect to a known address instead of discovering one.
+
+    Bonjour is multicast, so it dies at the first router: the phone has to be on
+    the same LAN segment. Given an address it can be reached anywhere it is
+    routable, including across a VPN such as Tailscale or WireGuard, which makes
+    the phone controllable from outside the house without any of this changing.
+
+    The identifier still has to match a local pair record, since that record
+    holds the keys the handshake needs. With exactly one paired device it is
+    inferred, so nobody has to type a UDID.
+    """
+    if identifier is None:
+        known = paired_identifiers()
+        if len(known) != 1:
+            log.warning(
+                "cannot infer which device to reach: %d pair records found. Pass an identifier.",
+                len(known),
+            )
+            return None
+        identifier = known[0]
+
+    try:
+        service = await tunnel_service.create_core_device_tunnel_service_using_remotepairing(
+            identifier, hostname, port
+        )
+    except Exception as exc:
+        log.debug("direct connect to %s:%s failed: %s", hostname, port, exc)
+        return None
+    log.info("connected directly to %s:%s", hostname, port)
+    return service
 
 
 @contextlib.asynccontextmanager

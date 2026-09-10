@@ -207,6 +207,31 @@ transport watcher to notice the link dying.
 Measured on an iPhone 15 Pro on iOS 26.5.2: discovery about 3 s, tunnel up in
 0.6 s, DVT channel open 0.2 s later.
 
+### Beyond the LAN
+
+Bonjour is multicast, so it dies at the first router and only ever finds a phone
+on the same network segment. Given an address instead, the phone is reachable
+anywhere it is routable:
+
+```
+python app.py --device-address 100.64.0.3
+```
+
+Put both the phone and this machine on a VPN such as Tailscale and that address
+is their tailnet IP, which makes the phone controllable from anywhere with
+internet, with no cable and no shared network. The identifier is inferred when
+only one device is paired; pass `--device-udid` if several are.
+
+This is also simply faster, since it skips the discovery timeout entirely: the
+same phone went from address to open channel in 0.7 s against 3.9 s via Bonjour.
+
+`--no-wireless` forces USB only.
+
+What none of this becomes is phone-only. The phone still needs to reach a
+computer running this program. Removing the computer altogether means an app on
+the device driving its own tunnel, which is a different project and needs macOS
+to build.
+
 ### GPS drift
 
 Two things give a simulated fix away even when the coordinates are plausible: a
