@@ -24,7 +24,6 @@ instead.
 ## Run
 
 ```
-cd C:\Users\tav08\locspoof
 python app.py
 ```
 
