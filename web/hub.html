@@ -160,7 +160,9 @@ function render() {
     if (d.udid && d.port && !d.paired) {
       acts.push(`<button class="primary" data-act="pair" data-udid="${esc(d.udid)}" data-ip="${esc(d.ip)}" data-port="${d.port}" data-name="${esc(d.name)}">Pair (tap Trust on the phone)</button>`);
     }
-    if (d.paired && d.port && !running) {
+    // A known port only skips discovery. Without one the worker still finds the
+    // phone over USB or on the same Wi-Fi, so do not hide the button.
+    if (d.paired && !running) {
       acts.push(`<button class="primary" data-act="start" data-udid="${esc(d.udid)}" data-ip="${esc(d.ip)}" data-name="${esc(d.name)}">Start spoofing</button>`);
     }
     if (running) {

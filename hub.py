@@ -146,7 +146,7 @@ def free_port(start: int = WORKER_PORT_BASE) -> int:
 class Worker:
     """One `app.py` child process, bound to one phone."""
 
-    def __init__(self, udid: str, owner: int, label: str, device_address: str) -> None:
+    def __init__(self, udid: str, owner: int, label: str, device_address: Optional[str]) -> None:
         self.udid = udid
         self.owner = owner
         self.label = label
@@ -176,9 +176,13 @@ class Worker:
             "--no-browser",
             "--device-udid",
             self.udid,
-            "--device-address",
-            self.device_address,
         ]
+        # An address is only needed to skip discovery. Without one, device.py
+        # tries USB first and then Bonjour, which is exactly what should happen
+        # on a machine sitting next to the phone: a cable or the same Wi-Fi
+        # works with no port known at all.
+        if self.device_address:
+            args += ["--device-address", self.device_address]
         log.info("spawning worker for %s on %s", self.label, self.port)
         self.process = await asyncio.create_subprocess_exec(
             *args,
@@ -602,12 +606,11 @@ def build_hub_app(store: DeviceStore, workers: WorkerManager) -> web.Application
         if udid not in set(pairing.paired_udids()):
             raise web.HTTPBadRequest(reason="that phone is not paired with this machine yet")
 
+        # No address is not an error. It means nothing has found this phone over
+        # the network yet, so let the worker fall back to USB and Bonjour; on a
+        # machine next to the phone that is the path that works anyway.
         ip = ip or str(store.get(udid).get("ip") or "")
         address = device_address(udid, ip) if ip else None
-        if address is None:
-            raise web.HTTPBadRequest(
-                reason="no RemotePairing port known for that phone; run discovery first"
-            )
         try:
             worker = await workers.start(udid, identity.user_id, label, address)
         except Exception as exc:
