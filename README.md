@@ -31,8 +31,8 @@ python app.py
 It opens `http://127.0.0.1:8765/`. Press Ctrl+C to stop, which clears the
 simulated location and hands the phone back to its real GPS.
 
-Flags: `--port N`, `--no-browser`, `-v` (debug logging, including
-pymobiledevice3 internals).
+Flags: `--host ADDR`, `--port N`, `--no-browser`, `-v` (debug logging,
+including pymobiledevice3 internals).
 
 ## Using it
 
@@ -80,7 +80,7 @@ Four moving parts:
 | `device.py` | Owns the tunnel and the LocationSimulation channel |
 | `route.py` | Polyline geometry, GPX, playback clock |
 | `routing.py` | Road routing and place search, with engine fallback |
-| `server.py` | HTTP API and SSE status stream, loopback only |
+| `server.py` | HTTP API and SSE status stream, loopback unless `--host` |
 | `web/index.html` | Leaflet UI |
 
 The chain to the phone is:
@@ -227,10 +227,38 @@ same phone went from address to open channel in 0.7 s against 3.9 s via Bonjour.
 
 `--no-wireless` forces USB only.
 
-What none of this becomes is phone-only. The phone still needs to reach a
-computer running this program. Removing the computer altogether means an app on
-the device driving its own tunnel, which is a different project and needs macOS
-to build.
+### Driving it from the phone
+
+The link above reaches the phone from the computer. Doing anything with it still
+meant sitting at the computer, because the map was served on loopback. `--host`
+serves it on a chosen address instead:
+
+```
+python app.py --device-address 100.64.0.3 --host 100.64.0.2
+```
+
+Then open `http://100.64.0.2:8765/` in Safari on the phone. Both legs now run
+over the tailnet — the control API out to the phone, the map back from it — so
+the computer can be at home with nothing plugged into it.
+
+Below 640px wide the panel becomes a bottom sheet that drops away with one tap,
+because on a phone the map *is* the control surface: every pin and every route
+point is a tap on it, and a 340px panel over a 390px screen leaves nothing to
+tap. Controls grow to thumb size and text inputs go to 16px, under which iOS
+Safari zooms the whole page on focus.
+
+**There is no password on any of this.** Loopback was the security boundary, and
+`--host` trades it for whichever network you name, so name a private one: a
+tailnet, where the ACLs are the access control, not a coffee shop's Wi-Fi.
+`0.0.0.0` and `::` are refused outright for that reason — binding every
+interface at once is never the narrow choice, and the difference between one
+routable address and all of them is the difference between your phone and
+anyone's.
+
+What none of this becomes is phone-only. The computer still has to be running
+this program and reachable; it just no longer has to be in front of you.
+Removing it altogether means an app on the device driving its own tunnel, which
+is a different project and needs macOS to build.
 
 ### GPS drift
 
@@ -280,7 +308,7 @@ Failures back off from 2s to a 30s ceiling. Device presence is polled every 2s.
 
 ## Limits
 
-- The spoof lasts only while this program is running and the phone is attached.
+- The spoof lasts only while this program is running and the phone is reachable.
   Quit, unplug, or reboot the phone and the real GPS returns.
 - Developer Mode stays visible in Settings while enabled.
 - Untethered operation is not supported here. That needs an app running on the

@@ -113,14 +113,62 @@
     padding: 6px 10px; font-family: ui-monospace, Consolas, monospace; font-size: var(--fs-sm);
     color: var(--dim);
   }
+
+  /* On a phone the 340px panel covers the whole screen, and the map is the
+     control: every pin and every route point is a tap on it. So below this
+     width the panel becomes a bottom sheet that can be dismissed, and the
+     targets grow to thumb size. */
+  #panelToggle, #panelClose { display: none; }
+  @media (max-width: 640px) {
+    #panel {
+      top: auto; bottom: 0; left: 0; right: 0; width: auto;
+      max-height: 62vh; border-radius: 14px 14px 0 0;
+      border-left: 0; border-right: 0; border-bottom: 0;
+    }
+    body.panel-hidden #panel { display: none; }
+    /* The dismiss control rides the header rather than floating over the
+       sheet, which would sit on top of whatever scrolled under it. Sticky
+       keeps it reachable without scrolling back up; the negative margins let
+       it span the panel's padding so nothing shows through behind it. */
+    #panel h1 {
+      /* top offsets the negative margin, so it stops flush with the panel's
+         top edge instead of 14px below it. */
+      position: sticky; top: -14px; z-index: 2;
+      margin: -14px -14px 10px; padding: 14px;
+      background: var(--panel);
+      display: flex; align-items: baseline; gap: 8px;
+    }
+    #panelClose {
+      display: block; margin-left: auto; flex: none;
+      background: #21262d; color: var(--text); border: 1px solid var(--line);
+      border-radius: 6px; padding: 7px 14px; font-size: var(--fs-sm);
+    }
+    /* Only offered when the sheet is down, so it can never overlap it. */
+    body.panel-hidden #panelToggle {
+      /* Clear of Leaflet's scale bar and attribution, which sit on the
+         bottom edge and are hit by a thumb reaching for either of these. */
+      display: block; position: absolute; left: 12px; bottom: 34px; z-index: 1001;
+      background: var(--accent); color: #fff; border: none; border-radius: 999px;
+      padding: 12px 20px; font-size: var(--fs-md); font-weight: 600;
+      box-shadow: 0 4px 14px rgba(0,0,0,.5);
+    }
+    .seg button, button.act { padding: 12px 6px; }
+    .presets button { flex: 1 1 30%; padding: 10px 2px; font-size: var(--fs-md); }
+    #results li { padding: 10px 8px; font-size: var(--fs-md); }
+    body.panel-hidden #coords { bottom: 34px; }
+    /* iOS Safari zooms the page when a focused input is under 16px. */
+    input[type=number], input[type=text], input[type=search] { font-size: 16px; padding: 9px 10px; }
+  }
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="coords">move the mouse over the map</div>
+<div id="coords">tap or hover the map for coordinates</div>
+<button id="panelToggle" type="button">Controls</button>
 
 <div id="panel">
-  <h1>locspoof <span id="ver"></span></h1>
+  <h1>locspoof <span id="ver"></span>
+    <button id="panelClose" type="button">Hide</button></h1>
 
   <div class="status">
     <div class="dot" id="dot"></div>
@@ -430,6 +478,8 @@ map.on('mousemove', (e) => {
 
 map.on('click', async (e) => {
   const lat = +e.latlng.lat.toFixed(6), lon = +e.latlng.lng.toFixed(6);
+  // Touch never fires mousemove, so the readout would otherwise stay blank.
+  $('coords').textContent = lat.toFixed(6) + ', ' + lon.toFixed(6);
   if (mode === 'pin') {
     try { await post('/api/location', { lat, lon }); }
     catch (err) { alert('Could not set location: ' + err.message); }
@@ -606,6 +656,13 @@ $('exportBtn').onclick = async () => {
   a.href = url; a.download = 'route.gpx'; a.click();
   URL.revokeObjectURL(url);
 };
+
+// The sheet starts open so the connection status is the first thing seen; one
+// tap gets it out of the way, since on a phone the map is most of the screen
+// and every pin and route point is a tap on it.
+const setPanel = (hidden) => document.body.classList.toggle('panel-hidden', hidden);
+$('panelClose').onclick = () => setPanel(true);
+$('panelToggle').onclick = () => setPanel(false);
 
 navigator.geolocation?.getCurrentPosition(
   (p) => { if (!phoneMarker) map.setView([p.coords.latitude, p.coords.longitude], 15); },

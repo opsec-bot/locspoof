@@ -1,7 +1,13 @@
 """Local HTTP API and static file serving.
 
-Binds to loopback only. There is no auth because there is no remote surface:
-anything that can reach this port can already run code as you.
+Loopback by default, where there is no auth because there is no remote surface:
+anything that can reach the port can already run code as you.
+
+`--host` breaks that assumption on purpose, so the map can be driven from the
+phone while both are out of the house. The replacement boundary is the network,
+not this file: bind a VPN address and the tailnet's own access rules decide who
+may reach it. `app.py` refuses a wildcard bind for that reason -- one routable
+address is a choice about who can move your phone, every interface is not.
 """
 from __future__ import annotations
 

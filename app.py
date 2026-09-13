@@ -3,13 +3,14 @@
 Runs one process holding one userspace RSD tunnel, a small HTTP API, and a
 Leaflet map UI. Start it, open the page, click the map.
 
-    python app.py [--port 8765] [--no-browser] [-v]
+    python app.py [--host ADDR] [--port 8765] [--no-browser] [-v]
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import sys
 import threading
@@ -21,13 +22,21 @@ from device import LocationSession
 from route import RoutePlayer
 from server import build_app
 
-HOST = "127.0.0.1"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local iPhone location simulator")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="loopback port to serve on")
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        metavar="ADDR",
+        help="address to serve the UI on. Loopback by default. Give it a VPN "
+        "address to open the map from the phone itself; the API has no auth, "
+        "so whatever can reach it can move your phone.",
+    )
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="port to serve on")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     parser.add_argument(
@@ -42,6 +51,51 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-wireless", action="store_true", help="USB only")
     return parser.parse_args()
+
+
+def check_host(value: str) -> str:
+    """Reject binds that would put the unauthenticated API on every interface.
+
+    `server.py` has no login because loopback meant no remote surface. Serving
+    it wider is a deliberate act, and there is a large difference between one
+    routable address and all of them: a laptop on cafe Wi-Fi that binds the
+    wildcard is handing the room a button that moves its owner's phone. An
+    explicit address keeps the exposure to the network you meant.
+    """
+    bare = value.strip().strip("[]")
+    unspecified = bare in ("", "*")  # aiohttp reads both as every interface
+    if not unspecified:
+        try:
+            unspecified = ipaddress.ip_address(bare).is_unspecified  # 0.0.0.0, ::
+        except ValueError:
+            return bare  # a hostname; leave resolution to the stack
+    if unspecified:
+        raise SystemExit(
+            f"  --host {value} would serve the map on every interface, and there\n"
+            "  is no password on it: anything that can reach the port can move\n"
+            "  your phone. Pass the one address you want instead, such as this\n"
+            "  machine's Tailscale IP (100.x.y.z)."
+        )
+    return bare
+
+
+def is_local(host: str) -> bool:
+    """True when only this machine can reach the bind address."""
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return host in ("localhost", "localhost.localdomain")
+
+
+def url_for(host: str, port: int) -> str:
+    """Browser URL for a bind address, bracketing IPv6 literals."""
+    bare = host.strip("[]")
+    try:
+        if isinstance(ipaddress.ip_address(bare), ipaddress.IPv6Address):
+            return f"http://[{bare}]:{port}/"
+    except ValueError:
+        pass
+    return f"http://{bare}:{port}/"
 
 
 def parse_address(value: str) -> tuple[str, int]:
@@ -62,6 +116,7 @@ def parse_address(value: str) -> tuple[str, int]:
 
 def main() -> int:
     args = parse_args()
+    host = check_host(args.host)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -84,11 +139,16 @@ def main() -> int:
     session.hold_gate = lambda: not player.running
     app = build_app(session, player)
 
-    url = f"http://{HOST}:{args.port}/"
+    url = url_for(host, args.port)
+    local_only = is_local(host)
 
     async def on_startup(_app: web.Application) -> None:
         session.start()
         print(f"\n  locspoof running at {url}")
+        if not local_only:
+            print("  open that on the phone to drive the map from anywhere it can")
+            print("  reach this address. Nothing asks for a password, so keep the")
+            print("  address on a private network.")
         print("  press Ctrl+C to stop and restore the real GPS\n")
         if not args.no_browser:
             # Opening a browser can block on Windows, so keep it off the loop.
@@ -105,7 +165,7 @@ def main() -> int:
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
-    web.run_app(app, host=HOST, port=args.port, print=None, handle_signals=True)
+    web.run_app(app, host=host, port=args.port, print=None, handle_signals=True)
     return 0
 
 
