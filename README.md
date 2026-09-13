@@ -153,29 +153,40 @@ is a one-off rather than a startup cost.
 
 ### What is measured, and what is not
 
-The hub itself is verified end to end: identity, worker spawn, the proxy for
-HTML, JSON and SSE, and stop.
+Verified end to end on an iPhone 15 Pro (iOS 26.5.2, Tailscale 1.102.4): the
+hub's identity routing, worker spawn, the proxy for HTML, JSON and SSE, and
+stop; a worker reaching `ready` over USB; and a full tunnel opened over the
+**tailnet**, setting and clearing a location with the phone on Wi-Fi and the
+control path going through Tailscale rather than the LAN.
 
-Network pairing is **not** verified, and the evidence so far is against it. A
-full sweep of 49152-65535 on an iPhone 15 Pro (iOS 26.5.2) over Tailscale, with
-the phone on cellular, found exactly two listeners: Tailscale's own peerapi
-(61600) and one port that accepted TCP but never answered the handshake. So on
-cellular the phone does not appear to serve RemotePairing on the tunnel
-interface, which would block not just pairing but the whole VM approach for a
-phone away from home. Whether it is served over Wi-Fi is the open question;
-`find_service_port` is how to answer it.
-
-If it turns out not to be, the fallback is a one-time cable pairing on a machine
-that has one. The record is three keys in a plist and names nothing about the
-host that made it, so it works unchanged on the VM. The setup page takes the
-upload, or copy it by hand:
+One setting decides whether any of the cable-free paths work at all:
 
 ```
-~/.pymobiledevice3/remote_<UDID>.plist
+com.apple.mobile.wireless_lockdown / EnableWifiDebugging
 ```
 
-That fallback still needs a reachable RemotePairing port to build a tunnel, so
-it solves onboarding, not reachability.
+With it `False`, iOS serves no developer service on any network interface and
+advertises nothing over Bonjour, so every port is refused and the phone looks
+unreachable even on the same Wi-Fi. It is the "Connect via Network" flag Xcode
+normally sets, and on a machine with no Xcode it has to be set over USB:
+
+```python
+await lockdown.set_value(True, domain="com.apple.mobile.wireless_lockdown",
+                         key="EnableWifiDebugging")
+```
+
+Two things worth knowing once it is on. The port is ephemeral and changes when
+the phone reboots, so `find_service_port` or a Bonjour browse from the same LAN
+is how it gets recovered. And a successful handshake does not necessarily
+report `peerDeviceInfo`: on iOS 26.5.2 it carried only the wire protocol
+versions, which is exactly why the library overrides `remote_identifier` rather
+than reading it back, so the caller's UDID has to stand in.
+
+Still unverified: whether the phone keeps serving that port on the tailnet
+interface once Wi-Fi is off and it is on cellular. That is the question the VM
+plan rests on, because it is the difference between an always-on box that has
+to sit on the home network and a cloud droplet that works from anywhere.
+
 
 ## How it works
 

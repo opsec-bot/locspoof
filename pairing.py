@@ -166,13 +166,22 @@ async def probe(
             # the peer information below is populated.
             paired = False
 
+        # peerDeviceInfo is not always present. Measured against an iPhone 15 Pro
+        # on iOS 26.5.2, a successful handshake carried only the wire protocol
+        # versions and deviceOptions, and no peer block at all -- which is
+        # exactly why the library overrides `remote_identifier` to return the
+        # caller's UDID rather than reading it back. So treat it as a bonus: if
+        # the phone volunteers an identifier, use it; otherwise the UDID the
+        # caller already supplied stands.
         peer = _peer_info(service)
-        if not peer.get("identifier"):
+        identifier = peer.get("identifier") or udid
+        if not identifier:
             raise PairingUnreachable(
-                f"{host}:{port} answered but reported no device identifier"
+                f"{host}:{port} completed a handshake but did not report which "
+                "device it is, so the UDID has to be supplied by the caller"
             )
         return ProbeResult(
-            udid=peer["identifier"],
+            udid=identifier,
             model=peer.get("model") or "",
             name=peer.get("name") or "",
             paired=paired,
