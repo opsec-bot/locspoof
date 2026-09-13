@@ -100,6 +100,14 @@ proxies rather than redirecting: `server.py` has no auth, so a worker on a
 tailnet port would be reachable by anyone on the tailnet, whereas on 127.0.0.1
 the only route in is through the hub, which checks ownership every time.
 
+Two people with their own tailnet accounts are fully separated: neither can see
+or reach the other's phone at all. Sharing one login is one user as far as
+whois is concerned, so that isolation is gone, and the hub instead breaks the
+tie on the machine the request came from -- browse from your own phone and you
+get your own phone's map. That works, but if you want the isolation, invite
+your brother as a real user from the Users tab rather than signing his phone in
+to your account.
+
 On Linux the tailscale local API socket is root-owned, so the hub needs one
 grant before `whois` will answer:
 

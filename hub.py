@@ -269,8 +269,11 @@ class Worker:
 class WorkerManager:
     def __init__(self) -> None:
         self._workers: dict[str, Worker] = {}
-        # Which phone a user is currently looking at, when they own several.
-        self._selected: dict[int, str] = {}
+        # Which phone a given machine is looking at, when more than one is up.
+        # Keyed by machine rather than user because two people sharing one
+        # tailnet login are one user as far as whois is concerned, and they
+        # still need separate selections.
+        self._selected: dict[str, str] = {}
 
     def all(self) -> list[Worker]:
         return list(self._workers.values())
@@ -286,17 +289,31 @@ class WorkerManager:
         return [w for w in self._workers.values() if w.owner == identity.user_id]
 
     def current(self, identity: tailnet.Identity) -> Optional[Worker]:
+        """The worker this request should be proxied to.
+
+        Ownership narrows the candidates; picking among them is deliberately
+        not just "the first one". Separate tailnet accounts make this trivial,
+        but a family sharing one login is one user to whois, so the tie is
+        broken on the machine the request came from: browse from your own
+        phone and you get your own phone's map, with no selection needed.
+        """
         mine = [w for w in self.owned_by(identity) if w.alive]
         if not mine:
             return None
-        chosen = self._selected.get(identity.user_id)
+
+        chosen = self._selected.get(identity.machine)
         for worker in mine:
             if worker.udid == chosen:
+                return worker
+        # A worker labelled with the requesting machine is that machine's own
+        # phone driving its own map, which is never the wrong answer.
+        for worker in mine:
+            if worker.label == identity.machine:
                 return worker
         return mine[0]
 
     def select(self, identity: tailnet.Identity, udid: str) -> None:
-        self._selected[identity.user_id] = udid
+        self._selected[identity.machine] = udid
 
     async def start(self, udid: str, owner: int, label: str, device_address: str) -> Worker:
         existing = self._workers.get(udid)
