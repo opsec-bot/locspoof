@@ -214,13 +214,17 @@ on the same network segment. Given an address instead, the phone is reachable
 anywhere it is routable:
 
 ```
-python app.py --device-address 100.64.0.3
+python app.py --device-address <phone-ip>
 ```
 
 Put both the phone and this machine on a VPN such as Tailscale and that address
-is their tailnet IP, which makes the phone controllable from anywhere with
+is the phone's tailnet IP, which makes it controllable from anywhere with
 internet, with no cable and no shared network. The identifier is inferred when
 only one device is paired; pass `--device-udid` if several are.
+
+Tailscale hands out addresses from `100.64.0.0/10`, so every one of them looks
+like every other one. Take the phone's from the Tailscale app on the phone, or
+from the machine list at `login.tailscale.com`, rather than from an example.
 
 This is also simply faster, since it skips the discovery timeout entirely: the
 same phone went from address to open channel in 0.7 s against 3.9 s via Bonjour.
@@ -234,10 +238,15 @@ meant sitting at the computer, because the map was served on loopback. `--host`
 serves it on a chosen address instead:
 
 ```
-python app.py --device-address 100.64.0.3 --host 100.64.0.2
+python app.py --device-address <phone-ip> --host <computer-ip>
 ```
 
-Then open `http://100.64.0.2:8765/` in Safari on the phone. Both legs now run
+The two are not interchangeable: `--device-address` is the phone, `--host` is
+the computer the phone will dial. `tailscale ip -4` on the computer prints its
+own; the phone's comes from the Tailscale app. Getting one wrong stops the
+bind, and the error then names the addresses this machine actually has.
+
+Then open `http://<computer-ip>:8765/` in Safari on the phone. Both legs now run
 over the tailnet — the control API out to the phone, the map back from it — so
 the computer can be at home with nothing plugged into it.
 

@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import ipaddress
+import socket
 import logging
 import sys
 import threading
@@ -98,6 +100,49 @@ def url_for(host: str, port: int) -> str:
     return f"http://{bare}:{port}/"
 
 
+def local_addresses() -> list[str]:
+    """Addresses this machine answers on, to name in a failed-bind message."""
+    found: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addr = info[4][0]
+            if addr not in found:
+                found.append(addr)
+    except OSError:
+        pass
+    return found
+
+
+def bind_error(host: str, port: int, exc: OSError) -> str:
+    """Explain a bind failure, which asyncio reports only as an address list.
+
+    Mixing up the two address flags is the easy mistake: `--host` is this
+    computer, `--device-address` is the phone, and both are 100.x on a tailnet,
+    so they look interchangeable and are not.
+    """
+    # asyncio reports a missing address as a bare "could not bind on any
+    # address out of [...]" with no errno, so None must not match the set.
+    in_use = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE)}
+    if exc.errno is not None and exc.errno in in_use:
+        return (
+            f"  port {port} is already in use. Pass --port with another number,\n"
+            "  or stop the copy of locspoof that already has it."
+        )
+    lines = [
+        f"  cannot serve on {host}: this machine has no such address.",
+        "",
+        "  --host is THIS computer's address, the one the phone dials.",
+        "  --device-address is the phone's. On a tailnet both start 100.,",
+        "  so check you have not swapped them.",
+    ]
+    mine = local_addresses()
+    if mine:
+        lines += ["", "  addresses this machine answers on:"]
+        lines += [f"    {a}" for a in mine]
+    lines += ["", "  `tailscale ip -4` prints the tailnet one."]
+    return "\n".join(lines)
+
+
 def parse_address(value: str) -> tuple[str, int]:
     """Split HOST[:PORT], tolerating bracketed IPv6 such as [fd89::1]:49152."""
     from wireless import DEFAULT_REMOTEPAIRING_PORT
@@ -165,7 +210,10 @@ def main() -> int:
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
-    web.run_app(app, host=host, port=args.port, print=None, handle_signals=True)
+    try:
+        web.run_app(app, host=host, port=args.port, print=None, handle_signals=True)
+    except OSError as exc:
+        raise SystemExit(bind_error(host, args.port, exc))
     return 0
 
 
