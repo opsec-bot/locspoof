@@ -1,89 +1,150 @@
 # locspoof
 
-Local iPhone location simulator for Windows. A map you click, a route you draw,
-and a supervisor that keeps the tunnel alive. Built directly on pymobiledevice3.
+Click a spot on a map and your iPhone reports that it is there. Draw a route and
+the phone drives it, slowing for corners and waiting at lights. The cable is
+needed once, and after that the phone can be in another state. Built on
+pymobiledevice3.
 
-## Requirements
+## What you need
 
-- **Apple Mobile Device Support** (installed with iTunes or the Apple Devices app
-  from the Microsoft Store). This provides usbmuxd, the USB transport. Without it
-  nothing can talk to the phone.
-- **Python 3.13** with `pymobiledevice3`, `aiohttp`, `gpxpy`. All already present
-  on this machine.
-- **iOS 17 or newer**, with **Developer Mode** on:
+- An iPhone on iOS 17 or newer with Developer Mode on:
   Settings > Privacy & Security > Developer Mode, then restart.
-- iPhone connected by **USB**, unlocked, and trusting this computer.
+- Windows with Apple Mobile Device Support, which arrives with iTunes or with
+  the Apple Devices app from the Microsoft Store. It is the USB driver. Without
+  it nothing can reach the phone.
+- Python 3.13.
 
-Verified end to end on **iOS 26.5.2** with pymobiledevice3 11.12.1 on Windows 10.
-The in-process `UserspaceRsdTunnel` works on that version, so no admin rights and
-no separate `tunneld` process are needed. If a future iOS build breaks that path,
-pymobiledevice3's `tunneld.api.get_tunneld_devices` is the fallback: run
-`pymobiledevice3 lockdown start-tunnel` alongside and attach to the existing RSD
-instead.
+## Setup
 
-## Run
+1. Install the packages:
 
-```
-cd C:\Users\tav08\locspoof
-python app.py
-```
+   ```
+   pip install -r requirements.txt
+   ```
 
-It opens `http://127.0.0.1:8765/`. Press Ctrl+C to stop, which clears the
-simulated location and hands the phone back to its real GPS.
+2. Plug the phone in, unlock it, tap Trust.
 
-Flags: `--host ADDR`, `--port N`, `--no-browser`, `-v` (debug logging,
-including pymobiledevice3 internals).
+3. Start it:
+
+   ```
+   python app.py
+   ```
+
+A browser opens on `http://127.0.0.1:8765/`. Click the map. The phone moves.
+
+Ctrl+C stops it and hands the phone back to its real GPS.
+
+Flags: `--host ADDR`, `--port N`, `--no-browser`, `-v` for debug logging.
+
+Tested end to end on iOS 26.5.2 with pymobiledevice3 11.12.1 on Windows 10. The
+in-process `UserspaceRsdTunnel` works there, so nothing needs admin rights and
+no separate `tunneld` has to run. Should a later iOS break that path,
+`tunneld.api.get_tunneld_devices` is the way back: run
+`pymobiledevice3 lockdown start-tunnel` alongside and attach to the RSD it
+opens.
 
 ## Using it
 
-**Search** — type an address, city or landmark to jump the map there.
-Backed by Nominatim.
+The map opens in Pin mode. Click anywhere and the phone reports that spot, click
+again and it moves. Paste `33.381861, -96.259611` into the coordinates box to
+land somewhere exact. The search box takes an address, a city or a landmark and
+jumps the map there, through Nominatim.
 
-**Pin mode** — click anywhere and the phone reports that spot. Or paste
-`33.381861, -96.259611` into the coordinates box.
+Switch to Route mode and your first two clicks become a start and a destination.
+It plans along real streets the moment the second one lands. More clicks add
+waypoints to pass through, and Drive, Bike and Walk each re-plan on their own
+network. For open water, for a field, or for an afternoon when the routing
+servers are down, straight-line mode joins your clicks with direct lines.
 
-**Route mode, follow roads** — click a start, then a destination, and the route
-is planned along real streets automatically. Two clicks is the whole workflow;
-it plans as soon as the second one lands. Add more clicks for waypoints to go
-through. Pick Drive, Bike or Walk and it re-plans on that network.
+Speed is in mph, with presets from walking to highway. Loop restarts each lap
+and back and forth reverses at the end. Realistic motion, on by default, pulls
+away from rest, brakes for corners, keeps to each road's speed limit and waits
+at junctions; switch it off and you get a constant glide down the line. Road
+speeds takes OSRM's figure for each street and turns the mph box into a ceiling,
+so 45 still crawls through a car park.
 
-**Route mode, straight lines** — click to drop points joined by direct lines.
-Use this for open water, off-road, or when the routing servers are down.
+Import a `.gpx` to load a route, or export the one you drew. Stop spoofing gives
+back the real GPS without quitting.
 
-**Speed** is in mph, with presets from walking to highway. `loop` restarts each
-lap; `back and forth` reverses at the end instead.
+Six basemaps sit in the control at the top right, and it remembers the one you
+picked. Satellite and Streets reach zoom 19. The dark canvas stops at 16, so
+switch to Satellite when the pin has to land on a particular building.
 
-**Realistic motion** (on by default) makes the phone accelerate from rest, brake
-for corners, obey each road's own speed limit, and wait at junctions. With it
-off you get the old behaviour: a constant glide down the line. **Road speeds**
-uses OSRM's per-segment speed for each street; the mph box then acts as a
-ceiling rather than a fixed speed, so a 45 mph setting still crawls through a
-car park.
+## Cutting the cable
 
-**GPX** — import a `.gpx` to load it as a route, or export what you have drawn.
+One pairing step, with the phone plugged in:
 
-**Stop spoofing** restores the real GPS without quitting.
+```
+python -m pymobiledevice3 lockdown remotepairing --pair
+```
 
-### Basemaps
+No Trust dialog appears, because the handshake rides the lockdown connection the
+phone already trusts. Check it took with
+`python -m pymobiledevice3 remote browse`, which should list the phone under
+`wifi` once you pull the cable.
 
-Six keyless layers via the control in the top right, and your choice is
-remembered: Satellite + labels (default), Satellite, Streets, Topographic,
-Dark, and OpenStreetMap. Satellite and Streets go to zoom 19; the Dark canvas
-stops at 16, so switch to Satellite when placing a pin on a specific building.
+From then on locspoof finds the phone itself. USB wins whenever the cable is in,
+since it comes up faster and no network can disturb it, and Wi-Fi carries it the
+rest of the time. The status line names the link that is live.
+
+## Leaving the house
+
+Bonjour is multicast. It dies at the first router and only ever finds a phone on
+the same network. Hand it an address instead and the phone is reachable wherever
+it routes:
+
+```
+python app.py --device-address <phone-ip>
+```
+
+Put the phone and the computer on Tailscale and that address is the phone's
+tailnet IP. It is also quicker, since it skips the discovery wait: the same phone went
+from address to open channel in 0.7s, against 3.9s through Bonjour.
+
+To work the map from the phone as well, serve it on the computer's tailnet
+address:
+
+```
+python app.py --device-address <phone-ip> --host <computer-ip>
+```
+
+Open `http://<computer-ip>:8765/` in Safari on the phone. Both halves now cross
+the tailnet, commands out to the phone and the map back from the computer, and
+that computer can sit at home with nothing plugged into it.
+
+The two addresses do different jobs. `--device-address` is the phone.
+`--host` is the computer the phone dials. Tailscale draws every address it hands
+out from `100.64.0.0/10`, so they all look alike; `tailscale ip -4` prints the
+computer's and the Tailscale app prints the phone's. Swap them and the bind
+fails, and the error lists the addresses the machine actually holds.
+
+Nothing here asks for a password. Loopback was the only thing keeping it to
+you, and `--host` trades that for whichever network you name, so name a private
+one. `0.0.0.0` and `::` are
+refused outright.
+
+Under 640px the panel folds into a sheet that drops away with one tap, because
+on a phone the map is the thing you touch.
+
+None of this gets you a phone working alone. The computer still has to run this
+program and still has to be reachable. Cutting it out altogether means an
+app on the phone driving its own tunnel, which needs macOS to build and is
+another project.
 
 ## How it works
 
-Four moving parts:
-
-| File | Responsibility |
+| File | Does |
 |---|---|
 | `device.py` | Owns the tunnel and the LocationSimulation channel |
 | `route.py` | Polyline geometry, GPX, playback clock |
 | `routing.py` | Road routing and place search, with engine fallback |
-| `server.py` | HTTP API and SSE status stream, loopback unless `--host` |
+| `motion.py` | Turns a route into a speed profile |
+| `jitter.py` | Correlated drift on the reported fix |
+| `wireless.py` | Reaches the phone over the network instead of the cable |
+| `server.py` | HTTP API and the status stream |
 | `web/index.html` | Leaflet UI |
 
-The chain to the phone is:
+The chain to the phone:
 
 ```
 usbmux (Apple driver)
@@ -92,27 +153,26 @@ usbmux (Apple driver)
       -> LocationSimulation    .set(lat, lon) / .clear()
 ```
 
-`LocationSimulation.set()` invokes the
-`simulateLocationWithLatitude:longitude:` selector on
-`com.apple.instruments.server.services.LocationSimulation`. That single call is
-the entire spoofing mechanism; everything else is plumbing to reach it.
+`LocationSimulation.set()` calls `simulateLocationWithLatitude:longitude:` on
+`com.apple.instruments.server.services.LocationSimulation`. That one call does
+all of the spoofing. Everything else is plumbing to reach it.
 
-### Why one process
+### One process
 
 pymobiledevice3's userspace tunnel runs on PyTCP, whose network stack is a
-process-global singleton. Only one tunnel can exist per process, and opening a
-second raises. So a single supervisor task owns the tunnel and every caller goes
+process-global singleton. One tunnel per process, and asking for a second one
+raises. So a single supervisor task owns the tunnel and every caller goes
 through `LocationSession`.
 
-### Road routing
+### Roads
 
-`routing.py` calls public OSRM instances. OSRM answers with Contraction
-Hierarchies, a preprocessed Dijkstra variant, which is why a 19-mile query
-returns in well under a second. Running A* here instead would mean holding the
-OSM road graph locally, gigabytes per region, for no gain.
+`routing.py` calls public OSRM instances. OSRM answers with contraction
+hierarchies, a preprocessed Dijkstra, which is why a 19-mile query comes back in
+well under a second. Running A* here would mean keeping the OSM road graph on
+disk, gigabytes for one region, and it would not answer any faster.
 
-Each profile has a list of engines tried in order, because the public demo
-servers go down often:
+Each profile works down a list of engines, because the public demo servers go
+down often:
 
 | Profile | First choice | Fallback |
 |---|---|---|
@@ -120,185 +180,68 @@ servers go down often:
 | Bike | routing.openstreetmap.de/routed-bike | router.project-osrm.org |
 | Walk | routing.openstreetmap.de/routed-foot | router.project-osrm.org |
 
-If every engine fails the UI says so and suggests straight-line mode, rather
-than leaving you with a dead button. Planning is proxied through the local
-server, not the browser, so there is one place for the fallback logic.
+If all of them fail the UI says so and points at straight-line mode. A button that
+silently does nothing would be worse. Planning runs through the local server,
+not the browser, so the fallback logic lives in one place.
 
-### Motion model
+### Motion
 
-Constant speed is the loudest tell a simulated location has. Nothing real holds
+Constant speed is the loudest tell a fix is simulated. Nothing real holds
 11.176 m/s for twenty minutes, takes a right angle without slowing, or crosses
-forty junctions without ever waiting.
+forty junctions and waits at none.
 
-`motion.py` turns a route into a velocity profile, built once in four passes:
+`motion.py` builds a speed profile in four passes: a ceiling per sample from
+OSRM's segment speeds, braking set by the turn angle at each vertex, stops
+placed at real junctions and turns, then a forward pass bounding acceleration
+and a backward pass bounding braking.
 
-1. A speed ceiling per sample, from OSRM's per-segment speeds.
-2. Corner braking, from the turn angle at each vertex.
-3. Stops, chosen at real junctions and turn manoeuvres.
-4. A forward pass limiting acceleration and a backward pass limiting
-   deceleration.
+The fourth pass is the one that matters. Sweeping `v² = u² + 2as` forward bounds
+how fast speed can climb, sweeping it backward bounds how late braking can
+start, and the smaller of the two at each point is the quickest profile the
+physics allows under the ceiling. The phone eases away from a stop and leans
+into it. Nothing jumps between speeds.
 
-Pass 4 is what sells it. Sweeping `v² = u² + 2as` forwards bounds how fast speed
-can rise, sweeping it backwards bounds how late braking can start, and the
-pointwise minimum is the fastest profile physically reachable under the ceiling.
-The phone eases away from a stop and brakes into it instead of teleporting
-between speeds.
+A stop's floor is not zero. The player moves by `v * dt`, so a true zero would
+never arrive at the point it is braking for. The car creeps in at 0.6 m/s and
+the standstill is a timer, during which the position does not change at all.
+Routes start and end at rest for the same reason. A phone already doing 45 mph
+when you press start has not come from anywhere.
 
-Two details that matter:
+Junctions come from OSRM's `intersections`, kept only where three or more
+bearings meet, since two is the road bending. Turns come from `maneuver.type`,
+minus `new name` and `continue`, which are the road changing name under you.
 
-- **A stop's speed floor is not zero.** The player advances by `v * dt`, so a
-  true zero would mean never arriving at the point it is braking for. The
-  vehicle creeps in at 0.6 m/s and the standstill is a dwell timer, during
-  which the position does not change at all.
-- **Routes start and end at rest**, for the same reason and by the same
-  mechanism. A phone that appears already doing 45 mph is not a journey.
+Seed the plan and the stops fall in the same places every run. Leave it off for
+fresh ones.
 
-Junctions come from OSRM's `intersections`, filtered to nodes with three or more
-bearings; two bearings is just the road bending. Turns come from `maneuver.type`,
-excluding `new name` and `continue`, which are the road changing name under you
-rather than you turning.
+### Drift
 
-Seed the plan to get the same stops every run; leave it off for fresh ones.
+Two things give away a simulated fix even when the coordinates make sense: a
+parked phone reporting the same numbers to the byte for thirty seconds, and a
+moving one sitting dead on the road centreline. Real receivers do neither.
 
-### Untethered over Wi-Fi
-
-The cable is only needed once. After a single pairing step the phone can be
-driven over the network with nothing plugged in.
-
-One time, with the phone connected by USB:
-
-```
-python -m pymobiledevice3 lockdown remotepairing --pair
-```
-
-That handshake runs over the already-trusted lockdownd transport, so it is
-promptless: no Trust dialog appears. It writes the RemotePairing pair record
-that Wi-Fi discovery depends on. Confirm it took with
-`python -m pymobiledevice3 remote browse`, which should list the phone under
-`wifi` once the cable is out.
-
-From then on `locspoof` finds the phone by itself. USB is preferred whenever the
-cable is present, because it establishes faster and cannot be disturbed by the
-network; Wi-Fi is used otherwise. The status line says which link is live.
-
-**How it works.** iOS 17.4+ exposes CoreDeviceProxy over lockdown, so
-pymobiledevice3's no-root helper always bootstraps over USB and only falls back
-to RemotePairing over Bonjour for older devices. That is a policy in the helper,
-not a limit of the device: a modern iPhone advertises `_remotepairing._tcp` on
-the LAN and serves the same tunnel over Wi-Fi.
-
-`UserspaceRsdTunnel._aopen_locked` is entirely transport-agnostic apart from one
-call to the module-level `_create_no_root_tunnel_provider`, which hard-codes the
-USB bootstrap. `wireless.py` swaps that single function for the duration of
-`aopen()`, which reuses the library's whole lifecycle: the process-global
-single-tunnel guard, the PyTCP tun, the dial plane, the RSD handshake and the
-AsyncExitStack teardown. Reimplementing `_aopen_locked` would have to reach into
-those same private globals to stay correct, and would rot faster.
-
-Discovery deduplicates by identifier, since Bonjour answers on every interface
-and the same phone comes back over both IPv4 and IPv6.
-
-Two things to know. Bonjour only returns devices that already hold a pair record
-locally, so discovery finding nothing usually means the pairing step has not been
-done rather than that the phone is unreachable. And a Wi-Fi session cannot poll
-usbmux for presence the way a USB one does, so it relies on the tunnel's own
-transport watcher to notice the link dying.
-
-Measured on an iPhone 15 Pro on iOS 26.5.2: discovery about 3 s, tunnel up in
-0.6 s, DVT channel open 0.2 s later.
-
-### Beyond the LAN
-
-Bonjour is multicast, so it dies at the first router and only ever finds a phone
-on the same network segment. Given an address instead, the phone is reachable
-anywhere it is routable:
-
-```
-python app.py --device-address <phone-ip>
-```
-
-Put both the phone and this machine on a VPN such as Tailscale and that address
-is the phone's tailnet IP, which makes it controllable from anywhere with
-internet, with no cable and no shared network. The identifier is inferred when
-only one device is paired; pass `--device-udid` if several are.
-
-Tailscale hands out addresses from `100.64.0.0/10`, so every one of them looks
-like every other one. Take the phone's from the Tailscale app on the phone, or
-from the machine list at `login.tailscale.com`, rather than from an example.
-
-This is also simply faster, since it skips the discovery timeout entirely: the
-same phone went from address to open channel in 0.7 s against 3.9 s via Bonjour.
-
-`--no-wireless` forces USB only.
-
-### Driving it from the phone
-
-The link above reaches the phone from the computer. Doing anything with it still
-meant sitting at the computer, because the map was served on loopback. `--host`
-serves it on a chosen address instead:
-
-```
-python app.py --device-address <phone-ip> --host <computer-ip>
-```
-
-The two are not interchangeable: `--device-address` is the phone, `--host` is
-the computer the phone will dial. `tailscale ip -4` on the computer prints its
-own; the phone's comes from the Tailscale app. Getting one wrong stops the
-bind, and the error then names the addresses this machine actually has.
-
-Then open `http://<computer-ip>:8765/` in Safari on the phone. Both legs now run
-over the tailnet — the control API out to the phone, the map back from it — so
-the computer can be at home with nothing plugged into it.
-
-Below 640px wide the panel becomes a bottom sheet that drops away with one tap,
-because on a phone the map *is* the control surface: every pin and every route
-point is a tap on it, and a 340px panel over a 390px screen leaves nothing to
-tap. Controls grow to thumb size and text inputs go to 16px, under which iOS
-Safari zooms the whole page on focus.
-
-**There is no password on any of this.** Loopback was the security boundary, and
-`--host` trades it for whichever network you name, so name a private one: a
-tailnet, where the ACLs are the access control, not a coffee shop's Wi-Fi.
-`0.0.0.0` and `::` are refused outright for that reason — binding every
-interface at once is never the narrow choice, and the difference between one
-routable address and all of them is the difference between your phone and
-anyone's.
-
-What none of this becomes is phone-only. The computer still has to be running
-this program and reachable; it just no longer has to be in front of you.
-Removing it altogether means an app on the device driving its own tunnel, which
-is a different project and needs macOS to build.
-
-### GPS drift
-
-Two things give a simulated fix away even when the coordinates are plausible: a
-parked phone reporting byte-identical coordinates for thirty seconds, and a
-moving one sitting exactly on the road centreline. Real receivers do neither.
-
-`jitter.py` is an Ornstein-Uhlenbeck process, which is the standard model for
-correlated, mean-reverting drift:
+`jitter.py` is an Ornstein-Uhlenbeck process, the usual model for drift that
+wanders and pulls back:
 
     dx = -(x / tau) dt + sigma * sqrt(2 dt / tau) dW
 
-Independent noise per tick would look like television static and be trivially
-separable from a real trace; this drifts smoothly instead, with a measured
-lag-1 correlation of about 0.9. Being mean-reverting it never walks away, so
-the position stays honest over a long session: 15 m was the worst excursion in
-100,000 steps.
+Fresh noise each tick would look like television static and come apart from a
+real trace at a glance. This drifts smoothly, with a measured lag-1 correlation
+near 0.9, and because it reverts it never walks off. Worst excursion in 100,000
+steps was 15 m.
 
-Spread is about 3 m stationary and 1.5 m moving, since a receiver averaging over
-a moving baseline reports a tighter fix than one sitting still among buildings.
-The initial offset is drawn from the equilibrium distribution rather than zero,
-because a first fix that is perfectly accurate is itself a tell.
+Spread is about 3 m parked and 1.5 m moving, since a receiver averaging over a
+moving baseline reports a tighter fix than one sitting among buildings. The
+first offset comes from the settled spread. Start it at zero and the phone lands
+perfectly on its opening fix, which is a tell of its own.
 
-Drift is applied to a *copy* of the true position, so progress along a route
-stays exact while only the reported fix wanders.
+Drift is applied to a copy of the true position, so progress along a route stays
+exact while the reported fix wanders. A parked pin gets the same treatment,
+pushed again once a second with new drift. That loop is gated on the route
+player itself, so a route that ends on its own hands control back with nothing
+to reset.
 
-A parked pin gets the same treatment: `device.py` re-pushes it once a second
-with fresh drift. That loop is gated on the route player rather than a flag, so
-a route finishing on its own hands control back with nothing to reset.
-
-### Reconnect behaviour
+### When it drops
 
 The supervisor is a state machine:
 
@@ -306,27 +249,28 @@ The supervisor is a state machine:
 no_device -> connecting -> ready -> (failure) -> no_device
 ```
 
-The coordinate you set is stored as *desired* state, separate from what is
-currently applied. Unplug the phone mid-session and the API keeps accepting
-coordinates without erroring; when the phone comes back, the supervisor
-re-applies the last one automatically. Route playback keeps its own clock
-running across a drop rather than stalling, so the position stays consistent
-with elapsed time.
+The coordinate you set is kept as what you asked for, separate from what is
+currently applied. Unplug the phone mid-session and the API keeps taking
+coordinates without complaint; when the phone returns the supervisor re-applies
+the last one. Route playback keeps its clock running through a drop, so the
+position still matches the time that has passed.
 
-Failures back off from 2s to a 30s ceiling. Device presence is polled every 2s.
+Failures back off from 2s to a 30s ceiling, and USB presence is polled every 2s.
+A Wi-Fi session cannot poll usbmux, so it leans on the tunnel's own transport
+watcher to notice the link die.
 
 ## Limits
 
-- The spoof lasts only while this program is running and the phone is reachable.
-  Quit, unplug, or reboot the phone and the real GPS returns.
-- Developer Mode stays visible in Settings while enabled.
-- Untethered operation is not supported here. That needs an app running on the
-  phone itself driving its own on-device tunnel, which is a different project.
-- Apps can still infer simulation heuristically: teleport-speed jumps, a fixed
-  altitude, or GPS that disagrees with Wi-Fi BSSIDs and motion sensors.
-  Apple's `isSimulatedBySoftware` flag is not set by this path.
+- The spoof lasts while this program runs and the phone stays reachable. Quit,
+  or reboot the phone, and the real GPS returns.
+- Developer Mode stays visible in Settings while it is on.
+- Bonjour only returns phones that already hold a pair record on this machine,
+  so finding nothing usually means the pairing step has not been done.
+- Apps can still catch it: a jump too fast to be travel, an altitude that never
+  changes, GPS that disagrees with the Wi-Fi networks in range or with the
+  motion sensors. Apple's `isSimulatedBySoftware` flag stays off on this path.
 
 ## Licence
 
-Uses pymobiledevice3, which is **GPL-3.0-or-later**. If you distribute this,
-those terms apply.
+Uses pymobiledevice3, which is GPL-3.0-or-later. Distribute this and those terms
+apply.
