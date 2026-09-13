@@ -24,6 +24,8 @@ from device import LocationSession
 from route import RoutePlayer
 from server import build_app
 
+log = logging.getLogger("locspoof")
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
@@ -98,6 +100,30 @@ def url_for(host: str, port: int) -> str:
     except ValueError:
         pass
     return f"http://{bare}:{port}/"
+
+
+def quiet_dropped_clients(loop: asyncio.AbstractEventLoop) -> None:
+    """Stop a phone locking its screen from printing a traceback.
+
+    Safari closes /api/events when the screen locks or the tab goes to the
+    background. The handler catches that, but on Windows the socket teardown
+    raises again inside _call_connection_lost, a transport callback with no
+    handler above it, so asyncio prints the whole stack. The stream is gone
+    either way and the browser reopens it, and away from the desk a screen
+    locks every few minutes. Kept at debug, so -v still shows them.
+    """
+    inherited = loop.get_exception_handler()
+
+    def handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        if isinstance(context.get("exception"), ConnectionResetError):
+            log.debug("client went away: %s", context.get("message"))
+            return
+        if inherited is None:
+            loop.default_exception_handler(context)
+        else:
+            inherited(loop, context)
+
+    loop.set_exception_handler(handler)
 
 
 def local_addresses() -> list[str]:
@@ -188,6 +214,7 @@ def main() -> int:
     local_only = is_local(host)
 
     async def on_startup(_app: web.Application) -> None:
+        quiet_dropped_clients(asyncio.get_running_loop())
         session.start()
         print(f"\n  locspoof running at {url}")
         if not local_only:
