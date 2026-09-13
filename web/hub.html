@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>locspoof phones</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --text: #e6edf3;
+    --dim: #8b949e; --accent: #2f81f7; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    --fs-sm: 11px; --fs-md: 14px; --fs-lg: 18px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 16px 40px;
+    font: var(--fs-md)/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  main { max-width: 620px; margin: 0 auto; }
+  h1 { font-size: var(--fs-lg); margin: 0 0 4px; font-weight: 650; letter-spacing: -.2px; }
+  .who { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 18px; }
+  .who b { color: var(--text); font-weight: 500; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 13px 14px; margin-bottom: 10px;
+  }
+  .row { display: flex; align-items: center; gap: 9px; }
+  .name { font-weight: 550; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--err); }
+  .spacer { flex: 1; }
+  .meta { color: var(--dim); font-size: var(--fs-sm); margin-top: 5px; word-break: break-all; }
+  .tag {
+    font-size: var(--fs-sm); border: 1px solid var(--line); border-radius: 20px;
+    padding: 1px 8px; color: var(--dim);
+  }
+  .tag.ok { color: var(--ok); border-color: #23803a; }
+  .tag.run { color: var(--accent); border-color: #1f4f8f; }
+
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+  button {
+    font: 500 var(--fs-md)/1 inherit; color: var(--text); background: #21262d;
+    border: 1px solid var(--line); border-radius: 7px; padding: 8px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #2a3138; border-color: #484f58; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #1f6feb; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .45; cursor: default; }
+  a.btn {
+    display: inline-block; text-decoration: none; font: 500 var(--fs-md)/1 inherit;
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+    border-radius: 7px; padding: 8px 12px;
+  }
+
+  h2 {
+    font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .6px;
+    color: var(--dim); font-weight: 600; margin: 24px 0 9px;
+  }
+  .job {
+    margin-top: 10px; padding: 9px 11px; background: #0d1117;
+    border: 1px solid var(--line); border-radius: 7px;
+    font: var(--fs-sm)/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--dim); max-height: 150px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .job.failed { color: var(--err); border-color: #6e2b28; }
+  .note { color: var(--dim); font-size: var(--fs-sm); margin: 8px 0 0; }
+  .err {
+    background: #2d1618; border: 1px solid #6e2b28; color: #ffb4ae;
+    border-radius: 8px; padding: 10px 12px; font-size: var(--fs-sm); margin-bottom: 12px;
+  }
+  input[type=text], input[type=file] {
+    font: var(--fs-md) inherit; color: var(--text); background: #0d1117;
+    border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; width: 100%;
+  }
+  label { display: block; font-size: var(--fs-sm); color: var(--dim); margin: 9px 0 4px; }
+  details summary { cursor: pointer; color: var(--dim); font-size: var(--fs-sm); }
+  details[open] summary { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>locspoof</h1>
+  <div class="who" id="who">identifying you...</div>
+  <div id="alert"></div>
+  <div id="devices"></div>
+
+  <h2>Pair with a cable instead</h2>
+  <div class="card">
+    <p class="note" style="margin-top:0">
+      If this VM cannot reach your phone's pairing service, pair once on a computer
+      that has a cable and bring the record here. Run
+      <code>python -m pymobiledevice3 lockdown remotepairing --pair</code>,
+      then upload <code>~/.pymobiledevice3/remote_&lt;UDID&gt;.plist</code>.
+      The record is just a keypair, so it works from anywhere.
+    </p>
+    <label for="rec">Pair record file</label>
+    <input type="file" id="rec" accept=".plist">
+    <label for="recUdid">UDID (filled in from the filename when it can be)</label>
+    <input type="text" id="recUdid" placeholder="00008130-000A31981143001C" spellcheck="false">
+    <div class="acts">
+      <button id="upload">Import record</button>
+    </div>
+    <div class="job" id="importLog" hidden></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+let polling = null;
+
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function api(path, body, method) {
+  const opts = { method: method || (body ? 'POST' : 'GET') };
+  if (body) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  if (!res.ok) throw new Error(res.statusText || text || ('HTTP ' + res.status));
+  return text ? JSON.parse(text) : {};
+}
+
+function render() {
+  if (!state) return;
+  const id = state.identity;
+  $('who').innerHTML = id.local
+    ? 'Signed in on this machine. You can see every phone.'
+    : `Signed in as <b>${esc(id.display)}</b> (${esc(id.login)}) from <b>${esc(id.machine)}</b>`;
+
+  $('alert').innerHTML = state.tailnet_error
+    ? `<div class="err">Tailscale did not answer: ${esc(state.tailnet_error)}<br>
+       On Linux the hub needs <code>sudo tailscale set --operator=$USER</code>.</div>`
+    : '';
+
+  if (!state.devices.length) {
+    $('devices').innerHTML = `<div class="card"><div class="meta">
+      No iOS devices found in your tailnet. Install Tailscale on the phone and
+      sign in with the same account, then reload.</div></div>`;
+    return;
+  }
+
+  $('devices').innerHTML = state.devices.map((d) => {
+    const running = d.running;
+    const tags = [
+      d.paired ? '<span class="tag ok">paired</span>' : '<span class="tag">not paired</span>',
+      d.port ? `<span class="tag">port ${d.port}</span>` : '<span class="tag">port unknown</span>',
+      running ? '<span class="tag run">running</span>' : '',
+    ].join(' ');
+    const acts = [];
+    if (!d.udid || !d.port) {
+      acts.push(`<button class="primary" data-act="discover" data-ip="${esc(d.ip)}" data-name="${esc(d.name)}">Find this phone</button>`);
+    }
+    if (d.udid && d.port && !d.paired) {
+      acts.push(`<button class="primary" data-act="pair" data-udid="${esc(d.udid)}" data-ip="${esc(d.ip)}" data-port="${d.port}" data-name="${esc(d.name)}">Pair (tap Trust on the phone)</button>`);
+    }
+    if (d.paired && d.port && !running) {
+      acts.push(`<button class="primary" data-act="start" data-udid="${esc(d.udid)}" data-ip="${esc(d.ip)}" data-name="${esc(d.name)}">Start spoofing</button>`);
+    }
+    if (running) {
+      acts.push('<a class="btn" href="/">Open the map</a>');
+      acts.push(`<button class="danger" data-act="stop" data-udid="${esc(d.udid)}">Stop</button>`);
+    }
+    if (d.udid && d.port) {
+      acts.push(`<button data-act="discover" data-ip="${esc(d.ip)}" data-name="${esc(d.name)}">Re-find port</button>`);
+    }
+    return `<div class="card">
+      <div class="row">
+        <span class="dot ${d.online ? 'on' : 'off'}"></span>
+        <span class="name">${esc(d.name)}</span>
+        <span class="spacer"></span>${tags}
+      </div>
+      <div class="meta">${esc(d.ip)}${d.udid ? ' &middot; ' + esc(d.udid) : ''}</div>
+      <div class="acts">${acts.join('')}</div>
+      <div class="job" id="log-${esc(d.name)}" hidden></div>
+    </div>`;
+  }).join('');
+}
+
+async function refresh() {
+  try {
+    state = await api('/hub/state');
+    render();
+  } catch (err) {
+    $('alert').innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+function showLog(name, job) {
+  const box = $('log-' + name);
+  if (!box) return;
+  box.hidden = false;
+  box.classList.toggle('failed', job.state === 'failed');
+  const lines = job.messages.slice();
+  if (job.error) lines.push('');
+  if (job.error) lines.push(job.error);
+  box.textContent = lines.join('\n') || 'working...';
+  box.scrollTop = box.scrollHeight;
+}
+
+async function runJob(name, path, body) {
+  if (polling) clearInterval(polling);
+  const { job } = await api(path, body);
+  return new Promise((resolve) => {
+    polling = setInterval(async () => {
+      let snap;
+      try { snap = await api('/hub/jobs/' + job); } catch { return; }
+      showLog(name, snap);
+      if (snap.state === 'running') return;
+      clearInterval(polling);
+      polling = null;
+      await refresh();
+      showLog(name, snap);
+      resolve(snap);
+    }, 700);
+  });
+}
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const { act, udid, ip, port, name } = btn.dataset;
+  const card = btn.closest('.card');
+  card.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  try {
+    if (act === 'discover') {
+      await runJob(name, '/hub/discover', { name, ip });
+    } else if (act === 'pair') {
+      await runJob(name, '/hub/pair', { udid, ip, port: Number(port) });
+    } else if (act === 'start') {
+      await api('/hub/start', { udid, ip, name });
+      location.href = '/';
+      return;
+    } else if (act === 'stop') {
+      await api('/hub/stop', { udid });
+      await refresh();
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    card.querySelectorAll('button').forEach((b) => (b.disabled = false));
+    if (!polling) await refresh();
+  }
+});
+
+// The canonical record filename carries the UDID, so save the typing.
+$('rec').onchange = () => {
+  const file = $('rec').files[0];
+  if (!file) return;
+  const m = /^remote_(.+)\.plist$/.exec(file.name);
+  if (m && !$('recUdid').value) $('recUdid').value = m[1];
+};
+
+$('upload').onclick = async () => {
+  const file = $('rec').files[0];
+  const box = $('importLog');
+  box.hidden = false;
+  box.classList.remove('failed');
+  if (!file) { box.textContent = 'Pick a .plist file first.'; return; }
+  const form = new FormData();
+  form.append('record', file);
+  if ($('recUdid').value.trim()) form.append('udid', $('recUdid').value.trim());
+  box.textContent = 'importing...';
+  try {
+    const res = await fetch('/hub/import', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(res.statusText || ('HTTP ' + res.status));
+    const out = await res.json();
+    box.textContent = 'Imported the record for ' + out.udid +
+      '. Find the phone\'s port above, then start it.';
+    await refresh();
+  } catch (err) {
+    box.classList.add('failed');
+    box.textContent = err.message;
+  }
+};
+
+refresh();
+setInterval(() => { if (!polling) refresh(); }, 5000);
+</script>
+</body>
+</html>

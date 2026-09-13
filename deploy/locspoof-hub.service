@@ -1,0 +1,55 @@
+# locspoof hub, one per VM.
+#
+#   sudo cp deploy/locspoof-hub.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now locspoof-hub
+#
+# Edit HUB_ADDR below to this machine's tailnet address first. The hub refuses a
+# wildcard bind on purpose: the map has no password, so the tailnet is the only
+# thing deciding who may move a phone.
+#
+# The hub calls `tailscale whois` to identify every request, and on Linux the
+# local API socket is root-owned, so grant the service user access once:
+#
+#   sudo tailscale set --operator=locspoof
+#
+# Without that, whois fails closed and the hub serves nobody.
+
+[Unit]
+Description=locspoof hub (iPhone location simulator, many phones)
+Documentation=https://github.com/opsec-bot/locspoof
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=exec
+User=locspoof
+Group=locspoof
+WorkingDirectory=/opt/locspoof
+
+# Set this to the output of `tailscale ip -4` on this machine.
+Environment=HUB_ADDR=100.0.0.0
+ExecStart=/usr/bin/python3 /opt/locspoof/hub.py --host ${HUB_ADDR} --port 8765
+
+# Workers are children of the hub. On stop, systemd's SIGTERM reaches the hub
+# first, whose on_cleanup stops each worker and clears every simulated location;
+# the generous timeout is there so that can finish rather than being killed
+# halfway and leaving a phone spoofed.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+Restart=on-failure
+RestartSec=5
+
+# Pair records and the port cache live in the service user's home, so it needs
+# a real one. Everything else stays read-only.
+ProtectSystem=strict
+ReadWritePaths=/home/locspoof
+ProtectHome=false
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

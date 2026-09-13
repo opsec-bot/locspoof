@@ -70,6 +70,105 @@ remembered: Satellite + labels (default), Satellite, Streets, Topographic,
 Dark, and OpenStreetMap. Satellite and Streets go to zoom 19; the Dark canvas
 stops at 16, so switch to Satellite when placing a pin on a specific building.
 
+## Many phones on one VM
+
+`app.py` drives one phone. To let several people share a single always-on box,
+`hub.py` runs one `app.py` per phone and puts them all behind one URL:
+
+```
+python hub.py --host 100.82.227.93
+```
+
+Everyone opens that same link. Nobody picks a port, and nobody gets a password.
+
+### How it decides whose phone you get
+
+Every request is attributed with `tailscale whois`, which resolves the source
+address back to the tailnet user whose WireGuard key the packets actually
+arrived under. That is not a header, so it cannot be forged by the person
+sending the request. The hub then proxies to *that person's* worker:
+
+```
+browser (tailnet) --> hub :8765 --> whois --> worker 127.0.0.1:88xx --> phone
+```
+
+So `/` is your map, and your brother loading the identical URL gets his. `/hub/`
+is always the setup page, and the map carries a small link back to it.
+
+Workers bind loopback, never the tailnet address. That is the reason the hub
+proxies rather than redirecting: `server.py` has no auth, so a worker on a
+tailnet port would be reachable by anyone on the tailnet, whereas on 127.0.0.1
+the only route in is through the hub, which checks ownership every time.
+
+On Linux the tailscale local API socket is root-owned, so the hub needs one
+grant before `whois` will answer:
+
+```
+sudo tailscale set --operator=$USER
+```
+
+Without it the hub fails closed and serves nobody. Requests arriving on
+loopback skip whois entirely and see every phone, which is what makes the hub
+usable on a laptop that is not on a tailnet at all.
+
+`deploy/locspoof-hub.service` is a systemd unit for the VM.
+
+### Onboarding a phone without a cable
+
+The documented way to create a RemotePairing record is
+`pymobiledevice3 lockdown remotepairing --pair` over USB, and a VM has no USB.
+pymobiledevice3 has a second path that the hub uses instead:
+`RemotePairingManualPairingService` opens a plain TCP connection to the phone
+and runs the same SRP handshake. On an iPhone no PIN is involved, because
+`_request_pair_consent` raises a Trust / Don't Trust dialog naming the host and
+the SRP password is the fixed `"000000"` (the PIN branch is tvOS only). Tap
+Trust and the record is written on the VM. Nothing is plugged in and nothing is
+uploaded.
+
+Two details make this work in practice.
+
+`RemotePairingTunnelService.remote_identifier` returns the constructor argument
+rather than what the handshake reported, and `pair_record_path` is built from
+it, so constructing one with an empty identifier saves the record as
+`remote_.plist` where no later lookup will ever find it.
+`pairing._IdentifiedPairingService` prefers the handshake value so first contact
+with an unknown phone still saves correctly.
+
+And the port has to be found by scanning. remoted takes whatever ephemeral port
+Darwin gives it, so it changes when the phone reboots, and the phone announces
+it over Bonjour, which is multicast and cannot cross a tailnet. `pairing.find_service_port`
+tries the likely ports, then sweeps 49152-65535. Ports that merely accept TCP
+are rejected, because Tailscale's own peerapi listens on the phone too and
+accepting a connection proves nothing; each candidate has to complete a
+RemotePairing handshake to count. The result is cached per device, so the sweep
+is a one-off rather than a startup cost.
+
+### What is measured, and what is not
+
+The hub itself is verified end to end: identity, worker spawn, the proxy for
+HTML, JSON and SSE, and stop.
+
+Network pairing is **not** verified, and the evidence so far is against it. A
+full sweep of 49152-65535 on an iPhone 15 Pro (iOS 26.5.2) over Tailscale, with
+the phone on cellular, found exactly two listeners: Tailscale's own peerapi
+(61600) and one port that accepted TCP but never answered the handshake. So on
+cellular the phone does not appear to serve RemotePairing on the tunnel
+interface, which would block not just pairing but the whole VM approach for a
+phone away from home. Whether it is served over Wi-Fi is the open question;
+`find_service_port` is how to answer it.
+
+If it turns out not to be, the fallback is a one-time cable pairing on a machine
+that has one. The record is three keys in a plist and names nothing about the
+host that made it, so it works unchanged on the VM. The setup page takes the
+upload, or copy it by hand:
+
+```
+~/.pymobiledevice3/remote_<UDID>.plist
+```
+
+That fallback still needs a reachable RemotePairing port to build a tunnel, so
+it solves onboarding, not reachability.
+
 ## How it works
 
 Four moving parts:
@@ -81,6 +180,10 @@ Four moving parts:
 | `routing.py` | Road routing and place search, with engine fallback |
 | `server.py` | HTTP API and SSE status stream, loopback unless `--host` |
 | `web/index.html` | Leaflet UI |
+| `hub.py` | Runs one `app.py` per phone and routes people to their own |
+| `tailnet.py` | Tailscale as the device directory and the login |
+| `pairing.py` | Pairing a phone with a machine that has no USB port |
+| `web/hub.html` | The setup page behind `/hub/` |
 
 The chain to the phone is:
 
