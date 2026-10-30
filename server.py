@@ -19,6 +19,7 @@ from typing import Any
 
 from aiohttp import web
 
+from controls import fetch_controls
 from device import LocationSession
 from motion import MotionOptions, build_plan
 from route import Route, RoutePlayer, build_gpx, parse_gpx
@@ -158,12 +159,27 @@ def build_app(session: LocationSession, player: RoutePlayer) -> web.Application:
             # distance along the route, so project them onto that axis.
             junctions = [route.distance_of_nearest(tuple(p)) for p in detail.get("junctions", [])]
             turns = [route.distance_of_nearest(tuple(p)) for p in detail.get("turns", [])]
+            # Real lights and signs, when sitescrape found them; None keeps
+            # the junction guess.
+            controls = None
+            task = detail.get("controls_task")
+            if task is not None:
+                try:
+                    # Usually done by now: the lookup starts when the route is
+                    # planned. Do not hold the start for a slow Overpass.
+                    controls = await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                except asyncio.TimeoutError:
+                    log.info("traffic controls still loading; guessing stops from junctions")
+            controls_m = None if controls is None else [
+                (route.distance_of_nearest((c["lat"], c["lon"])), c["kind"]) for c in controls
+            ]
             plan = build_plan(
                 route,
                 options,
                 segment_speeds=detail.get("segment_speeds"),
                 junctions_m=junctions,
                 turns_m=turns,
+                controls_m=controls_m,
             )
 
         await player.start(
@@ -200,6 +216,14 @@ def build_app(session: LocationSession, player: RoutePlayer) -> web.Application:
         except RoutingError as exc:
             # 502: we are fine, the upstream engines are not.
             raise web.HTTPBadGateway(reason=f"routing failed: {exc}")
+
+        # Real lights and stop signs come from Overpass, which can take a
+        # while. Look them up in the background; starting the route waits a
+        # little for them and otherwise guesses.
+        previous = last_plan.get("controls_task")
+        if previous is not None and not previous.done():
+            previous.cancel()
+        result["controls_task"] = asyncio.create_task(fetch_controls(result["points"]))
 
         # Keep the road detail for the motion model, but do not ship the bulky
         # per-segment arrays to the browser; it has no use for them.
