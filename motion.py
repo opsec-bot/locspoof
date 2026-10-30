@@ -58,6 +58,11 @@ class ProfileParams:
     junction_stop_chance: float
     turn_stop_chance: float
     stop_dwell: tuple[float, float]  # seconds, uniform range
+    stop_gap_m: float      # never stop twice closer than this
+    # Real traffic controls from OSM: kind -> (chance, dwell range). When these
+    # are known, junctions are no longer guessed at and turns rarely stop.
+    controls: dict[str, tuple[float, tuple[float, float]]] = field(default_factory=dict)
+    turn_stop_chance_known: float = 0.0
 
 
 # Cars brake harder than they accelerate and lose a lot of speed in a corner.
@@ -66,19 +71,76 @@ PARAMS: dict[str, ProfileParams] = {
     "drive": ProfileParams(
         accel=1.4, decel=2.4, default_speed=13.4, max_speed=40.0,
         corner_speeds=((20, 1e9), (45, 11.0), (80, 7.0), (120, 4.5), (180, 3.0)),
-        junction_stop_chance=0.30, turn_stop_chance=0.55, stop_dwell=(4.0, 22.0),
+        junction_stop_chance=0.15, turn_stop_chance=0.45, stop_dwell=(4.0, 22.0),
+        stop_gap_m=150.0,
+        # Lights on a main road are timed, so a red is about one in three; a stop sign almost always
+        # means a full stop, if a short one.
+        controls={
+            "signal": (0.35, (8.0, 45.0)),
+            "stop": (0.95, (1.0, 4.0)),
+            "all_way_stop": (0.95, (1.0, 5.0)),
+            "give_way": (0.15, (1.0, 4.0)),
+        },
+        turn_stop_chance_known=0.10,
     ),
     "bike": ProfileParams(
         accel=0.9, decel=1.8, default_speed=5.0, max_speed=12.0,
         corner_speeds=((25, 1e9), (60, 4.5), (100, 3.0), (180, 2.0)),
-        junction_stop_chance=0.22, turn_stop_chance=0.35, stop_dwell=(3.0, 15.0),
+        junction_stop_chance=0.15, turn_stop_chance=0.30, stop_dwell=(3.0, 15.0),
+        stop_gap_m=80.0,
+        controls={
+            "signal": (0.35, (8.0, 40.0)),
+            "stop": (0.5, (1.0, 3.0)),
+            "all_way_stop": (0.6, (1.0, 3.0)),
+            "give_way": (0.1, (1.0, 3.0)),
+        },
+        turn_stop_chance_known=0.08,
     ),
     "walk": ProfileParams(
         accel=0.6, decel=0.9, default_speed=1.35, max_speed=2.6,
         corner_speeds=((60, 1e9), (120, 1.1), (180, 0.9)),
         junction_stop_chance=0.12, turn_stop_chance=0.15, stop_dwell=(2.0, 12.0),
+        stop_gap_m=40.0,
+        # Walkers wait at crosswalk lights and ignore signs meant for cars.
+        controls={"signal": (0.5, (5.0, 40.0))},
+        turn_stop_chance_known=0.05,
     ),
 }
+
+
+def _stop_scale(road_speed: float) -> float:
+    """How likely a stop is, given how fast the road is.
+
+    Side streets on a 25 mph road often mean a light or a stop sign. On a
+    45 mph arterial most of them are the side street yielding to you, and on
+    a highway nothing makes you stop dead short of traffic.
+    """
+    if road_speed <= 11.0:   # ~25 mph
+        return 1.0
+    if road_speed <= 18.0:   # ~40 mph
+        return 1.0 - 0.7 * (road_speed - 11.0) / 7.0
+    if road_speed <= 24.0:   # ~54 mph
+        return 0.3 - 0.3 * (road_speed - 18.0) / 6.0
+    return 0.0
+
+
+# One intersection is often mapped as several nodes: a light per direction, or
+# per carriageway on a divided road. Each would get its own roll at a red, so
+# anything this close together counts once.
+CONTROL_MERGE_M = 50.0
+# When merged, the strongest control wins: a light beats a sign.
+_CONTROL_RANK = {"signal": 3, "all_way_stop": 2, "stop": 1, "give_way": 0}
+
+
+def _merge_controls(controls_m: Sequence[tuple[float, str]]) -> list[tuple[float, str]]:
+    merged: list[tuple[float, str]] = []
+    for distance, kind in sorted(controls_m):
+        if merged and distance - merged[-1][0] < CONTROL_MERGE_M:
+            if _CONTROL_RANK.get(kind, -1) > _CONTROL_RANK.get(merged[-1][1], -1):
+                merged[-1] = (merged[-1][0], kind)
+            continue
+        merged.append((distance, kind))
+    return merged
 
 
 @dataclass
@@ -172,6 +234,7 @@ def build_plan(
     segment_speeds: Optional[Sequence[Optional[float]]] = None,
     junctions_m: Optional[Sequence[float]] = None,
     turns_m: Optional[Sequence[float]] = None,
+    controls_m: Optional[Sequence[tuple[float, str]]] = None,
 ) -> MotionPlan:
     """Turn a route into a velocity profile.
 
@@ -181,6 +244,9 @@ def build_plan(
         segment. Missing or None entries fall back to the mode default.
     :param junctions_m: distances along the route of real road junctions.
     :param turns_m: distances along the route of turn manoeuvres.
+    :param controls_m: (distance, kind) of real traffic lights and signs from
+        OSM. None means unknown, so stops are guessed from junctions; a list,
+        even an empty one, replaces that guess.
     """
     params = PARAMS.get(options.profile) or PARAMS["drive"]
     rng = random.Random(options.seed)
@@ -207,6 +273,10 @@ def build_plan(
             base = min(base, user_cap) if options.use_road_speeds and segment_speeds else user_cap
         ceiling[i] = min(base, params.max_speed)
 
+    # Road speed before corners and stops shape it, used to judge whether a
+    # junction is the kind you would stop at.
+    road_ceiling = list(ceiling)
+
     # ---- pass 2: corner braking ------------------------------------------
     for idx in range(1, len(route.points) - 1):
         angle = turn_angle(route.points[idx - 1], route.points[idx], route.points[idx + 1])
@@ -223,23 +293,36 @@ def build_plan(
     # ---- pass 3: stops ----------------------------------------------------
     stops: list[Stop] = []
     if options.stops_enabled:
-        candidates: list[tuple[float, str, float]] = []
-        for d in junctions_m or ():
-            candidates.append((d, "junction", params.junction_stop_chance))
-        for d in turns_m or ():
-            candidates.append((d, "turn", params.turn_stop_chance))
-        candidates.sort()
+        # (distance, reason, chance, dwell range, scale by road speed)
+        candidates: list[tuple[float, str, float, tuple[float, float], bool]] = []
+        if controls_m is None:
+            for d in junctions_m or ():
+                candidates.append((d, "junction", params.junction_stop_chance, params.stop_dwell, True))
+            for d in turns_m or ():
+                candidates.append((d, "turn", params.turn_stop_chance, params.stop_dwell, True))
+        else:
+            for d, kind in _merge_controls(controls_m):
+                if kind in params.controls:
+                    chance, dwell = params.controls[kind]
+                    # A light or a sign applies however fast the road is.
+                    candidates.append((d, kind, chance, dwell, False))
+            for d in turns_m or ():
+                candidates.append((d, "turn", params.turn_stop_chance_known, (1.0, 5.0), True))
+        candidates.sort(key=lambda c: c[0])
 
         last_stop = -1e9
-        for distance, reason, chance in candidates:
-            # Never stop twice within 40 m, or right at either end of the route.
-            if distance - last_stop < 40.0:
+        for distance, reason, chance, dwell_range, scaled in candidates:
+            # Never stop twice too close together, or right at either end.
+            if distance - last_stop < params.stop_gap_m:
                 continue
             if distance < 15.0 or distance > length - 15.0:
                 continue
+            if scaled:
+                road_speed = road_ceiling[min(count - 1, max(0, int(round(distance / step))))]
+                chance *= _stop_scale(road_speed)
             if rng.random() > chance:
                 continue
-            dwell = rng.uniform(*params.stop_dwell)
+            dwell = rng.uniform(*dwell_range)
             stops.append(Stop(distance_m=distance, dwell_s=dwell, reason=reason))
             last_stop = distance
             for i in _window(distance, 1.5, step, count):
