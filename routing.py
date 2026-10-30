@@ -56,9 +56,10 @@ def _coord_list(points: Sequence[Point]) -> str:
 
 # Manoeuvres that involve actually turning the wheel. "new name" and "continue"
 # are just the road changing name underneath you, so they are not turns.
+# Only manoeuvres where a car can actually come to a halt. Forks, merges and
+# ramps happen at speed, so counting them put full stops on the highway.
 TURN_MANEUVERS = frozenset({
-    "turn", "end of road", "fork", "merge", "on ramp", "off ramp",
-    "roundabout", "rotary", "roundabout turn",
+    "turn", "end of road", "roundabout", "rotary", "roundabout turn",
 })
 
 
